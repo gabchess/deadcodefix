@@ -139,14 +139,20 @@ const defaultGenerator: TextGeneratorFn = async ({
   };
 };
 
+function cleanSecret(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const cleaned = value.replace(/[^\x21-\x7e]/g, "").trim();
+  return cleaned.length > 0 ? cleaned : undefined;
+}
+
 export function credentialsFromEnv(
   env: Record<string, string | undefined> = process.env,
 ): RouterCredentials {
   return {
-    vercelGatewayApiKey: env.AI_GATEWAY_API_KEY,
-    vercelOidcToken: env.VERCEL_OIDC_TOKEN,
-    openaiApiKey: env.OPENAI_API_KEY,
-    openrouterApiKey: env.OPENROUTER_API_KEY,
+    vercelGatewayApiKey: cleanSecret(env.AI_GATEWAY_API_KEY),
+    vercelOidcToken: cleanSecret(env.VERCEL_OIDC_TOKEN),
+    openaiApiKey: cleanSecret(env.OPENAI_API_KEY),
+    openrouterApiKey: cleanSecret(env.OPENROUTER_API_KEY),
   };
 }
 

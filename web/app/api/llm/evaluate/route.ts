@@ -21,6 +21,10 @@ const EvaluateRequestSchema = z.object({
 
 type ProviderName = "vercel-ai-gateway" | "openai" | "openrouter";
 
+function cleanSecret(value: string | undefined): string {
+  return value ? value.replace(/[^\x21-\x7e]/g, "").trim() : "";
+}
+
 function getProviderChain(): Array<{
   provider: ProviderName;
   buildModel: (modelId: string) => LanguageModel | string;
@@ -30,17 +34,22 @@ function getProviderChain(): Array<{
     buildModel: (modelId: string) => LanguageModel | string;
   }> = [];
 
-  if (process.env.VERCEL_OIDC_TOKEN || process.env.AI_GATEWAY_API_KEY) {
+  const oidcToken = cleanSecret(process.env.VERCEL_OIDC_TOKEN);
+  const gatewayKey = cleanSecret(process.env.AI_GATEWAY_API_KEY);
+  const openaiKey = cleanSecret(process.env.OPENAI_API_KEY);
+  const openrouterKey = cleanSecret(process.env.OPENROUTER_API_KEY);
+
+  if (oidcToken || gatewayKey) {
     chain.push({
       provider: "vercel-ai-gateway",
       buildModel: (modelId) => modelId,
     });
   }
-  if (process.env.OPENAI_API_KEY) {
+  if (openaiKey) {
     chain.push({
       provider: "openai",
       buildModel: (modelId) => {
-        const openai = createOpenAI({ apiKey: process.env.OPENAI_API_KEY });
+        const openai = createOpenAI({ apiKey: openaiKey });
         const bare = modelId.startsWith("openai/")
           ? modelId.slice("openai/".length)
           : "gpt-5-mini";
@@ -48,14 +57,14 @@ function getProviderChain(): Array<{
       },
     });
   }
-  if (process.env.OPENROUTER_API_KEY) {
+  if (openrouterKey) {
     chain.push({
       provider: "openrouter",
       buildModel: (modelId) => {
         const openrouter = createOpenAICompatible({
           name: "openrouter",
           baseURL: "https://openrouter.ai/api/v1",
-          apiKey: process.env.OPENROUTER_API_KEY,
+          apiKey: openrouterKey,
         });
         return openrouter.chatModel(modelId);
       },

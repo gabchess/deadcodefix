@@ -1,11 +1,21 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  credentialsFromEnv,
   estimateCallCostUsd,
   generateWithFallback,
   resolveProviderOrder,
   type ProviderName,
 } from "../src/llm/router.ts";
+
+test("credentialsFromEnv strips UTF-8 BOM and control whitespace from secrets", () => {
+  const creds = credentialsFromEnv({
+    OPENAI_API_KEY: "\uFEFFsk-test-clean\r\n",
+    AI_GATEWAY_API_KEY: "  \uFEFFvck_12345  ",
+  });
+  assert.equal(creds.openaiApiKey, "sk-test-clean");
+  assert.equal(creds.vercelGatewayApiKey, "vck_12345");
+});
 
 test("resolveProviderOrder prioritizes Vercel AI Gateway -> OpenAI -> OpenRouter", () => {
   assert.deepEqual(

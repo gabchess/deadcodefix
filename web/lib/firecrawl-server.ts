@@ -7,6 +7,10 @@ export function sha256Hex(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
+function cleanSecret(value: string | undefined): string {
+  return value ? value.replace(/[^\x21-\x7e]/g, "").trim() : "";
+}
+
 export function assertSafePublicUrl(rawUrl: string): URL {
   let parsed: URL;
   try {
@@ -71,7 +75,7 @@ export async function runDeveloperIndexSearch(
   hits: DeveloperSearchHit[];
   receiptSha256: string;
 }> {
-  const apiKey = input.byokApiKey || process.env.FIRECRAWL_API_KEY || "";
+  const apiKey = cleanSecret(input.byokApiKey) || cleanSecret(process.env.FIRECRAWL_API_KEY);
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
@@ -198,7 +202,7 @@ export async function runLiveChangeTrackingScan(
   input: z.infer<typeof DriftScanRequestSchema>,
 ) {
   const safeUrl = assertSafePublicUrl(input.url);
-  const apiKey = input.byokApiKey || process.env.FIRECRAWL_API_KEY || "";
+  const apiKey = cleanSecret(input.byokApiKey) || cleanSecret(process.env.FIRECRAWL_API_KEY);
   if (!apiKey.trim()) {
     throw new Error(
       "Live Firecrawl Change Tracking & Map requires FIRECRAWL_API_KEY (configured on Vercel or entered in the in-memory BYOK field).",
