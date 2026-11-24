@@ -58,7 +58,7 @@ export interface DocDriftReceipt {
   retrievedAt: string;
   tag: string;
   mode: "live" | "replay";
-  changeStatus: "new" | "same" | "changed" | "removed";
+  changeStatus: "new" | "same" | "changed" | "removed" | "unavailable";
   previousScrapeAt: string | null;
   gitDiff: string | null;
   jsonFieldDiffs: Record<string, { previous: unknown; current: unknown }>;
@@ -226,6 +226,11 @@ export function createFirecrawlTransport(apiKey: string): FirecrawlTransport {
         formats: [
           "markdown",
           {
+            type: "json",
+            prompt,
+            schema,
+          } as unknown as "json",
+          {
             type: "changeTracking",
             modes: ["git-diff", "json"],
             prompt,
@@ -364,7 +369,7 @@ export async function trackDocumentationDrift(
     mode: "live",
     changeStatus: parsedTracking.success
       ? parsedTracking.data.changeStatus
-      : "new",
+      : "unavailable",
     previousScrapeAt: parsedTracking.success
       ? (parsedTracking.data.previousScrapeAt ?? null)
       : null,
@@ -506,6 +511,9 @@ export async function buildLiveEvidenceBundle(
         tag: input.tag,
         allowedHosts: input.allowedHosts,
       });
+      if (receipt.changeStatus === "unavailable") {
+        omissions.push(`Change tracking unavailable for ${url}`);
+      }
       driftReceipts.push(receipt);
     } catch (error) {
       omissions.push(

@@ -38,6 +38,8 @@ Live mode requires explicit FIRECRAWL_API_KEY and approved LLM spend caps.`);
       JSON.stringify(
         HARNESS_UPGRADE_CASES.map((c) => ({
           id: c.id,
+          mode: "replay" as const,
+          verificationKind: c.verificationKind,
           title: c.title,
           ecosystem: c.harnessEcosystem,
           targetUpgrade: c.targetUpgrade,

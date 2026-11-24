@@ -17,44 +17,71 @@ test("credentialsFromEnv strips UTF-8 BOM and control whitespace from secrets", 
   assert.equal(creds.vercelGatewayApiKey, "vck_12345");
 });
 
-test("resolveProviderOrder prioritizes Vercel AI Gateway -> OpenAI -> OpenRouter", () => {
+test("resolveProviderOrder prioritizes Vercel AI Gateway -> OpenAI -> OpenRouter and skips OpenAI for non-OpenAI slugs", () => {
   assert.deepEqual(
-    resolveProviderOrder({
-      vercelGatewayApiKey: "vck_test",
-      openaiApiKey: "sk-test",
-      openrouterApiKey: "sk-or-test",
-    }),
+    resolveProviderOrder(
+      {
+        vercelGatewayApiKey: "vck_test",
+        openaiApiKey: "sk-test",
+        openrouterApiKey: "sk-or-test",
+      },
+      "openai/gpt-5-mini",
+    ),
     ["vercel-ai-gateway", "openai", "openrouter"],
   );
   assert.deepEqual(
-    resolveProviderOrder({
-      vercelOidcToken: "oidc_test",
-      openrouterApiKey: "sk-or-test",
-    }),
+    resolveProviderOrder(
+      {
+        vercelGatewayApiKey: "vck_test",
+        openaiApiKey: "sk-test",
+        openrouterApiKey: "sk-or-test",
+      },
+      "anthropic/claude-sonnet-5.5",
+    ),
     ["vercel-ai-gateway", "openrouter"],
   );
-  assert.deepEqual(resolveProviderOrder({}), []);
+  assert.deepEqual(
+    resolveProviderOrder(
+      { openaiApiKey: "sk-test" },
+      "anthropic/claude-sonnet-5.5",
+    ),
+    [],
+  );
 });
 
-test("generateWithFallback fails closed when budget cap is reached or no keys exist", async () => {
+test("generateWithFallback fails closed when remaining budget cannot cover conservative reservation or no compatible keys exist", async () => {
   const overBudget = await generateWithFallback(
     {
       modelId: "openai/gpt-5-mini",
       prompt: "Check patch",
-      maxUsdCap: 50,
-      spentUsdSoFar: 50,
+      maxOutputTokens: 2048,
+      maxUsdCap: 0.001,
+      spentUsdSoFar: 0.000999,
     },
     { openaiApiKey: "sk-test" },
   );
   assert.equal(overBudget.status, "blocked");
-  assert.match(overBudget.blockReason ?? "", /Budget cap reached/);
-
-  const noCreds = await generateWithFallback(
-    { modelId: "openai/gpt-5-mini", prompt: "Check patch" },
-    {},
+  assert.match(
+    overBudget.blockReason ?? "",
+    /insufficient remaining allowance/i,
   );
-  assert.equal(noCreds.status, "blocked");
-  assert.match(noCreds.blockReason ?? "", /No LLM provider credentials/);
+
+  const nonFinite = await generateWithFallback(
+    {
+      modelId: "openai/gpt-5-mini",
+      prompt: "Check patch",
+      maxUsdCap: Number.NaN,
+    },
+    { openaiApiKey: "sk-test" },
+  );
+  assert.equal(nonFinite.status, "blocked");
+
+  const incompatible = await generateWithFallback(
+    { modelId: "anthropic/claude-sonnet-5.5", prompt: "Check patch" },
+    { openaiApiKey: "sk-test" },
+  );
+  assert.equal(incompatible.status, "blocked");
+  assert.match(incompatible.blockReason ?? "", /No compatible LLM provider/);
 });
 
 test("generateWithFallback cascades from Vercel AI Gateway to OpenAI and then OpenRouter", async () => {

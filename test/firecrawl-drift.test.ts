@@ -171,6 +171,35 @@ test("mapDocumentationSite filters links to allowlisted hosts", async () => {
   );
 });
 
+test("trackDocumentationDrift returns unavailable and records omission when changeTracking is omitted", async () => {
+  const transport = createFakeTransport({
+    async scrapeWithChangeTracking({ url }) {
+      return {
+        markdown: "# Migration Guide",
+        metadata: { sourceURL: url, url },
+        changeTracking: undefined,
+      };
+    },
+  });
+  const receipt = await trackDocumentationDrift(transport, {
+    url: "https://ai-sdk.dev/docs/migration-guides/migration-guide-5-0",
+    tag: "missing-tracking",
+    allowedHosts: ["ai-sdk.dev"],
+  });
+  assert.equal(receipt.changeStatus, "unavailable");
+
+  const bundle = await buildLiveEvidenceBundle(transport, {
+    caseId: "missing-tracking-case",
+    docUrls: ["https://ai-sdk.dev/docs/migration-guides/migration-guide-5-0"],
+    developerQuery: "vercel ai",
+    tag: "missing-tracking",
+    allowedHosts: ["ai-sdk.dev"],
+  });
+  assert.ok(
+    bundle.omissions.some((msg) => /Change tracking unavailable/i.test(msg)),
+  );
+});
+
 test("buildLiveEvidenceBundle combines drift, map, and developer hits with bundle hash", async () => {
   const bundle = await buildLiveEvidenceBundle(createFakeTransport(), {
     caseId: "pi-sdk-tool-upgrade",

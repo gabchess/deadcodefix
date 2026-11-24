@@ -12,6 +12,7 @@ export interface VerifierCheck {
 export interface DemoCase {
   id: string;
   badge: string;
+  verificationKind: "static-contract" | "isolated-replay";
   title: string;
   ecosystem: string;
   targetUpgrade: string;
@@ -44,10 +45,11 @@ export const DEMO_CASES: DemoCase[] = [
   {
     id: "pi-sdk-tool-upgrade",
     badge: "Flagship OSS Harness",
+    verificationKind: "static-contract",
     title: "Pi / pi-pstack Harness: AI SDK v4 → v6+ Upgrade & Dead-Shim Removal",
     ecosystem: "Pi Coding Agent · pi-pstack · Vercel AI SDK",
     targetUpgrade: "ai@4.x → ai@6.x + openai/gpt-5-mini",
-    provenanceLabel: "Deterministic Supervisor Verifier + Firecrawl Drift Contract",
+    provenanceLabel: "Synthetic Replay · Static Contract Checks + Git-Verified Patch",
     summary:
       "Upgrades a minimal Pi/pstack TypeScript tool-loop adapter from broken AI SDK v4 calls (parameters, maxSteps) to v6+ (inputSchema, stopWhen: stepCountIs), while deleting a vulnerable 2024 regex markdown-fence parser and 3 obsolete prompt rules.",
     deadWorkaroundsRemoved: [
@@ -59,12 +61,12 @@ export const DEMO_CASES: DemoCase[] = [
     linesDeleted: 20,
     linesAdded: 22,
     patchSha256:
-      "a9c4e710b6d41f3c94f8b2d1f49a028e3d5f11b7e8c92a4d6f102b3c4d5e6f71",
-    repairPatch: `diff --git a/packages/pi-pstack/src/tool-adapter.ts b/packages/pi-pstack/src/tool-adapter.ts
-index 4a18c2e..9f30b14 100644
---- a/packages/pi-pstack/src/tool-adapter.ts
-+++ b/packages/pi-pstack/src/tool-adapter.ts
-@@ -1,37 +1,39 @@
+      "c425c9292b5611dd74f093c4cbda87926ddf90faa33560a756788766b1c789ca",
+    repairPatch: `diff --git a/tool-adapter.ts b/tool-adapter.ts
+index 373c9ea..6f9fd25 100644
+--- a/tool-adapter.ts
++++ b/tool-adapter.ts
+@@ -1,28 +1,25 @@
 -// pi-pstack tool-loop adapter (AI SDK v4 legacy harness)
 -import { generateText, tool } from "ai";
 +// pi-pstack tool-loop adapter (AI SDK v6+ repaired & pruned)
@@ -73,19 +75,18 @@ index 4a18c2e..9f30b14 100644
  
 -// DEAD WORKAROUND (2024): strip markdown fences around JSON tool payloads
 -export function stripLegacyMarkdownFences(raw: string): string {
--  const fenced = raw.match(/\`\`\`(?:json)?\\s*([\\s\\S]*?)\`\`\`/i);
+-  const fenced = raw.match(/\\\`\\\`\\\`(?:json)?\\s*([\\s\\S]*?)\\\`\\\`\\\`/i);
 -  return fenced ? fenced[1].trim() : raw.trim();
 -}
--
++export const SYSTEM_PROMPT =
++  "You are a Pi coding agent running pstack playbooks. Return schema-valid tool calls.";
+ 
 -export const SYSTEM_PROMPT_SEDIMENT = [
 -  "You are a Pi coding agent running pstack playbooks.",
 -  "CRITICAL: NEVER wrap tool JSON in triple backticks.",
 -  "CRITICAL: ALWAYS repeat the schema keys in exact order.",
 -  "CRITICAL: If the tool returns an array, ignore extra fields.",
 -].join("\\n");
-+export const SYSTEM_PROMPT =
-+  "You are a Pi coding agent running pstack playbooks. Return schema-valid tool calls.";
-+
 +const ToolValueSchema = z.object({ value: z.number().finite() }).strict();
 +const ContentBlockSchema = z.object({
 +  content: z
@@ -106,8 +107,7 @@ index 4a18c2e..9f30b14 100644
          execute: async ({ path }: { path: string }) => ({ ok: true, path }),
        }),
      },
-   };
- }
+@@ -31,9 +28,14 @@ export function buildPiToolConfig() {
  
  export function parseToolPayload(input: string): { ok: boolean; value?: number; error?: string } {
    try {
@@ -125,7 +125,7 @@ index 4a18c2e..9f30b14 100644
    } catch {
      return { ok: false, error: "malformed" };
    }
- }`,
+`,
     firecrawl: {
       sourceUrl: "https://ai-sdk.dev/docs/migration-guides/migration-guide-5-0",
       tag: "ai-sdk-migration-v5-v6",
@@ -149,6 +149,14 @@ index 4a18c2e..9f30b14 100644
       },
       developerIndexHits: [
         {
+          id: "doc:vercel/ai/packages/harness-pi/README.md",
+          kind: "doc",
+          title: "AI SDK — Pi Harness (@ai-sdk/harness-pi using inputSchema)",
+          url: "https://github.com/vercel/ai/blob/04a8f3837e7cf350358f2a084507445ab3e15f11/packages/harness-pi/README.md",
+          passage:
+            "HarnessV1 adapter backed by @earendil-works/pi-coding-agent. Defines tools with tool({ description, inputSchema: z.object(...), execute }).",
+        },
+        {
           id: "doc:ai-sdk.dev/docs/migration-guides/migration-guide-5-0",
           kind: "doc",
           title: "Vercel AI SDK — Tool parameters renamed to inputSchema",
@@ -156,89 +164,89 @@ index 4a18c2e..9f30b14 100644
           passage:
             "In AI SDK 5+, `parameters` in `tool()` was renamed to `inputSchema` aligned with MCP, and `maxSteps` was replaced by `stopWhen: stepCountIs(N)`.",
         },
-        {
-          id: "pull_request:badlogic/pi-mono#412",
-          kind: "pull_request",
-          title: "pi-coding-agent — Remove legacy markdown-fence regex parser",
-          url: "https://github.com/badlogic/pi-mono",
-          passage:
-            "Strict schema validation supersedes regex markdown-fence stripping, which silently executed attacker-injected JSON blocks inside tool strings.",
-        },
       ],
     },
     checks: [
       {
         id: "v6-input-schema-contract",
-        label: "AI SDK v6+ inputSchema Contract",
+        label: "AI SDK v6+ inputSchema Contract (Static)",
         category: "upgrade",
         armBPassed: false,
         armCPassed: true,
-        armBDetail: "Uses removed AI SDK v4 parameters property on tool().",
+        armBDetail: "Still uses removed AI SDK v4 parameters property.",
         armCDetail: "Uses AI SDK v5+/v6+ inputSchema on tool().",
-        observationSha256: "e1f8493b7b0a2c11f7c4a9183e2b0d4c9a120b7f",
+        observationSha256:
+          "c172322f537083b689091317ede6c26e1b3129aec639d5e1acef8b08eddfac85",
       },
       {
         id: "stop-when-step-guard",
-        label: "Loop Guard (stopWhen: stepCountIs)",
+        label: "Loop Guard stopWhen: stepCountIs (Static)",
         category: "upgrade",
         armBPassed: false,
         armCPassed: true,
-        armBDetail: "Still configures removed maxSteps: 5 option.",
-        armCDetail: "Uses stopWhen: stepCountIs(5) deterministic loop bound.",
-        observationSha256: "b27c9d4e1f3a884c6d0e1a928f44b71a20e3c901",
+        armBDetail: "Still uses removed maxSteps option.",
+        armCDetail: "Uses stopWhen: stepCountIs(5) loop guard.",
+        observationSha256:
+          "11d495868718faea3e52f19a60c8dee8e46ac70a05c808b17d7befb0a4b9f580",
       },
       {
         id: "mcp-content-block-parsing",
-        label: "Structured MCP Content Block Parsing",
+        label: "Structured MCP Content Block Schema (Static)",
         category: "upgrade",
         armBPassed: false,
         armCPassed: true,
-        armBDetail: "Cannot unwrap { content: [{ type: 'text', text }] }.",
-        armCDetail: "Validates single text block via strict ContentBlockSchema.",
-        observationSha256: "7a40219c8e11d3f5a9b6c002e47f183d5510a2ce",
+        armBDetail: "Fails to unwrap structured text content blocks.",
+        armCDetail: "Handles structured MCP content blocks cleanly.",
+        observationSha256:
+          "832ca8f31f83f97c1b22aec91b1aaaebc2b64403abea1cd969b63cf5581cadad",
       },
       {
         id: "legacy-v1-compat",
-        label: "Legacy v1 Caller Compatibility",
+        label: "Legacy v1 Caller Compatibility (Static)",
         category: "legacy-compat",
         armBPassed: true,
         armCPassed: true,
-        armBDetail: "Preserves legacy { value: 17 } output shape.",
-        armCDetail: "Preserves legacy { value: 17 } output shape (zero regression).",
-        observationSha256: "120c752ba86cca95b56b73456e09f51fabceae81",
+        armBDetail: "Preserves legacy { value: 17 } payload compatibility.",
+        armCDetail: "Preserves legacy { value: 17 } payload compatibility.",
+        observationSha256:
+          "d5bbeb09b2ba4a65456eb50178371491a1e547890f7eea3558a2271b47dc726a",
       },
       {
         id: "adversarial-injection-fence-hardening",
-        label: "Adversarial Prompt-Injection Fence Check",
+        label: "Dead Regex Fence Shim Removal (Static)",
         category: "security",
         armBPassed: false,
         armCPassed: true,
         armBDetail:
-          "Vulnerable: stripLegacyMarkdownFences() parses injected fenced JSON inside untrusted strings.",
+          "Vulnerable: regex fence extractor executes attacker-injected fenced JSON inside strings.",
         armCDetail:
-          "Deleted dead regex shim; strict Zod schema rejects injected blocks.",
-        observationSha256: "05d5099a1ca2d8077ee09fb2bd6160b790e6da09",
+          "Removed dead regex fence shim; strict Zod schema rejects injected blocks.",
+        observationSha256:
+          "3e1967e08b46587abef4823738e3510c37381d45fbb5ec82d2debc4b3bfce7b7",
       },
       {
         id: "dead-prompt-sediment-pruned",
-        label: "Dead Prompt Sediment Pruned",
+        label: "Dead Prompt Sediment Pruned (Static)",
         category: "bloat-pruning",
         armBPassed: false,
         armCPassed: true,
         armBDetail:
-          "Bloated: 3 obsolete JSON-formatting workaround lines billed every turn.",
-        armCDetail: "Pruned obsolete rules (-310 tokens/turn saved).",
-        observationSha256: "d93e933879f1a8f164a686e83e0cd496cf4d3267",
+          "Bloated: 3 obsolete prompt workaround lines still billed on every turn.",
+        armCDetail: "Pruned obsolete prompt workarounds (-310 tokens/turn).",
+        observationSha256:
+          "c08f1933744742aa752ae8d6a8edf753fde3e0ff0dc8c14847560e9b76e0b7f5",
       },
     ],
   },
   {
     id: "matt-coding-standards-prune",
     badge: "Software Factories",
+    verificationKind: "static-contract",
     title: "Software Factory: Pruning CODING_STANDARDS.md & Prompt Sediment",
     ecosystem: "Matt Pocock Software Factories · pstack /code-review",
-    targetUpgrade: "GPT-4 era review rules → GPT-5 / Claude Sonnet 5.5 + ESLint/tsc",
-    provenanceLabel: "Deterministic Sediment Audit + Rule Verification",
+    targetUpgrade:
+      "GPT-4 era review rules → GPT-5 / Claude Sonnet 5.5 + ESLint/tsc",
+    provenanceLabel: "Synthetic Replay · Static Sediment Checks + Git-Verified Patch",
     summary:
       "Applies Matt Pocock's sediment & no-op test: deletes prose rules already enforced deterministically by tsc/ESLint/Prettier and strips legacy GPT-4 prompt workarounds while preserving 100% of high-judgment architectural rules.",
     deadWorkaroundsRemoved: [
@@ -249,17 +257,20 @@ index 4a18c2e..9f30b14 100644
     linesDeleted: 15,
     linesAdded: 6,
     patchSha256:
-      "4f891b23a01c7d55e8a20b9c31d47e66a901c2d3e4f5a6b7c8d9e0f1a2b3c4d5",
+      "341666166da8f152d2b01c2f8b9005741c7efa29a9f2003e0fb97b304f0bfcb1",
     repairPatch: `diff --git a/CODING_STANDARDS.md b/CODING_STANDARDS.md
-index 8d21a03..1e44c77 100644
+index 6d45936..2301eca 100644
 --- a/CODING_STANDARDS.md
 +++ b/CODING_STANDARDS.md
-@@ -1,19 +1,10 @@
+@@ -1,20 +1,11 @@
 -# CODING_STANDARDS.md (Bloated — 420-line sediment sample)
--
++# CODING_STANDARDS.md (Pruned — Deterministic Checks Own the Rest)
+ 
 -## 1. Never use \`any\` or non-null assertions \`!\`
 -Do not write \`any\` or \`!\` anywhere in TypeScript files.
--
++> Rules already enforced deterministically by \`tsc\`, \`eslint\`, and \`prettier\` were pruned
++> (see \`eslint.config.js\` -> \`no-explicit-any\`, \`no-non-null-assertion\`, \`no-unused-vars\`).
+ 
 -## 2. Never leave unused variables or imports
 -Always double check imports before finishing a PR.
 -
@@ -267,11 +278,6 @@ index 8d21a03..1e44c77 100644
 -Make sure every file is formatted properly with 2-space indentation.
 -
 -## 4. Fail with a thrown response, not a return value
-+# CODING_STANDARDS.md (Pruned — Deterministic Checks Own the Rest)
-+
-+> Rules already enforced deterministically by \`tsc\`, \`eslint\`, and \`prettier\` were pruned
-+> (see \`eslint.config.js\` -> \`no-explicit-any\`, \`no-non-null-assertion\`, \`no-unused-vars\`).
-+
 +## 1. Fail with a thrown response, not a return value
  A loader or an action that cannot continue throws a typed HTTP response.
  Do not return \`{ error: string }\` shapes for components to unpack.
@@ -281,7 +287,8 @@ index 8d21a03..1e44c77 100644
  Every API route, CLI boundary, and Firecrawl webhook payload must be validated with Zod.
 -
 -## 6. [LEGACY GPT-4 WORKAROUND] Always print "FINAL_ANSWER:" before finishing
--Repeat your plan three times before editing files so the parser catches your output.`,
+-Repeat your plan three times before editing files so the parser catches your output.
+`,
     firecrawl: {
       sourceUrl: "https://docs.firecrawl.dev/features/change-tracking",
       tag: "software-factory-standards-prune",
@@ -322,55 +329,64 @@ index 8d21a03..1e44c77 100644
     checks: [
       {
         id: "deterministic-rules-delegated",
-        label: "Deterministic Rules Offloaded to Linters",
+        label: "Deterministic Rules Offloaded to Linters (Static)",
         category: "bloat-pruning",
         armBPassed: false,
         armCPassed: true,
-        armBDetail: "Redundant prose duplicates Prettier & ESLint checks.",
-        armCDetail: "Pruned redundant prose; deterministic CI owns them.",
-        observationSha256: "9b1a4f7c2d8e3015f4a6b7c8d9e0f1a2b3c4d5e6",
+        armBDetail: "Redundant prose duplicates Prettier/ESLint checks.",
+        armCDetail:
+          "Redundant lint/format prose pruned; deterministic tooling owns them.",
+        observationSha256:
+          "dc057bd4ec762153e01f22e81245ee283ce0c7fdaf6bafb1ba2223993fb1d9f5",
       },
       {
         id: "legacy-model-sediment-removed",
-        label: "Legacy GPT-4 Workaround Removed",
+        label: "Legacy GPT-4 Workaround Removed (Static)",
         category: "upgrade",
         armBPassed: false,
         armCPassed: true,
-        armBDetail: "Obsolete FINAL_ANSWER repetition workaround still present.",
-        armCDetail: "Removed obsolete GPT-4 prompt workaround.",
-        observationSha256: "3c5d7e9f1a2b4c6d8e0f1a3b5c7d9e1f2a4b6c8d",
+        armBDetail: "Obsolete GPT-4 prompt workaround still present.",
+        armCDetail: "Removed obsolete GPT-4 workaround rule.",
+        observationSha256:
+          "0a19e8e7b960dc452bcb35922f4b232f9048cf1e470ea66cdbfd1ccff87aaf7c",
       },
       {
         id: "high-signal-architecture-rules-kept",
-        label: "High-Signal Architecture Rules Preserved",
+        label: "High-Signal Architecture Rules Preserved (Static)",
         category: "legacy-compat",
         armBPassed: true,
         armCPassed: true,
-        armBDetail: "Retains thrown-response & Zod boundary standards.",
-        armCDetail: "Retains 100% of architectural judgment rules.",
-        observationSha256: "5e7f9a1b3c5d7e9f1a3b5c7d9e1f3a5b7c9d1e3f",
+        armBDetail:
+          "Preserved core architectural judgment rules for /code-review.",
+        armCDetail:
+          "Preserved core architectural judgment rules for /code-review.",
+        observationSha256:
+          "f041266e3b48e8e3cd6c2b1f285d631d4759fc13114119da953198e5566c6538",
       },
       {
         id: "token-footprint-reduced",
-        label: "Per-Turn Review Payload Reduced",
+        label: "Per-Turn Review Payload Reduced (Static)",
         category: "bloat-pruning",
         armBPassed: false,
         armCPassed: true,
-        armBDetail: "Bloated document sends 1,420+ extra tokens per review turn.",
-        armCDetail: "Lean document passes <620 char budget (-1,420 tokens/turn).",
-        observationSha256: "7f9a1b3c5d7e9f1a3b5c7d9e1f3a5b7c9d1e3f5a",
+        armBDetail: "Bloated document sends 1,420+ extra tokens per turn.",
+        armCDetail: "Document size passes <620 char budget (-1,420 tokens/turn).",
+        observationSha256:
+          "c933797cf1c75801fab673e7e1c0f9e803a7e18d7b9c11126306246eb210d4ee",
       },
     ],
   },
   {
     id: "owned-response-format",
     badge: "Forensic Offline Replay",
+    verificationKind: "isolated-replay",
     title: "Owned Tool-Response Replay (129 SHA-256 Reproducible Manifest)",
     ecosystem: "deadcodefix Core CLI · Zero-Key Isolated Verifier",
     targetUpgrade: "Legacy flat JSON → Structured content-block tool response",
-    provenanceLabel: "Synthetic Offline Replay (Zero Provider Keys · 77 Core Tests)",
+    provenanceLabel:
+      "Synthetic Offline Replay (Zero Provider Keys · 77 Core Isolated Tests)",
     summary:
-      "The original zero-key reproducible CLI fixture audited across 129 SHA-256 package hashes: demonstrates strict supervisor isolation, exact output comparison, and immutable receipts without claiming live model improvement.",
+      "The original zero-key reproducible CLI fixture audited across 129 SHA-256 package hashes: demonstrates strict out-of-process supervisor isolation, exact output comparison, and immutable receipts without claiming live model improvement.",
     deadWorkaroundsRemoved: [
       "Unchecked JSON.parse(input).value assumption replaced with strict schema validation",
     ],
@@ -429,63 +445,69 @@ index bff5d42..7fcb36d 100644
     checks: [
       {
         id: "legacy-compatibility",
-        label: "Legacy Compatibility",
+        label: "Legacy Compatibility (Isolated Subprocess)",
         category: "legacy-compat",
         armBPassed: true,
         armCPassed: true,
         armBDetail: '{"ok":true,"value":17}',
         armCDetail: '{"ok":true,"value":17}',
-        observationSha256: "120c752ba86cca95b56b73456e09f51fabceae81",
+        observationSha256:
+          "120c752ba86cca95b56b73456e09f51fabceae81cf30a3c5e6cc68fa3c861eb3",
       },
       {
         id: "current-tool-format",
-        label: "Current Tool Format",
+        label: "Current Tool Format (Isolated Subprocess)",
         category: "upgrade",
         armBPassed: false,
         armCPassed: true,
         armBDetail: '{"ok":true} (missing value)',
         armCDetail: '{"ok":true,"value":42}',
-        observationSha256: "5d53a274b37a0e1fd753d7652575ee49dd66867a",
+        observationSha256:
+          "5d53a274b37a0e1fd753d7652575ee49dd66867af08c6e828825097dc8f25476",
       },
       {
         id: "malformed-tool-payload",
-        label: "Malformed Tool Payload",
+        label: "Malformed Tool Payload (Isolated Subprocess)",
         category: "security",
         armBPassed: false,
         armCPassed: true,
         armBDetail: '{"ok":true} (silent corruption)',
         armCDetail: '{"ok":false,"error":"malformed"}',
-        observationSha256: "64c1be0d38c89d6af2541bdadf5a276812c7fd23",
+        observationSha256:
+          "64c1be0d38c89d6af2541bdadf5a276812c7fd23716af6fc6708f9c93b753536",
       },
       {
         id: "instruction-is-data",
-        label: "Prompt Injection Treated as Data",
+        label: "Prompt Injection Treated as Data (Isolated Subprocess)",
         category: "security",
         armBPassed: false,
         armCPassed: true,
         armBDetail: '{"ok":true} (failed rejection)',
         armCDetail: '{"ok":false,"error":"malformed"}',
-        observationSha256: "05d5099a1ca2d8077ee09fb2bd6160b790e6da09",
+        observationSha256:
+          "05d5099a1ca2d8077ee09fb2bd6160b790e6da09a43b3fc58718486efc5e579c",
       },
       {
         id: "wrong-value-type",
-        label: "Wrong Value Type Rejection",
+        label: "Wrong Value Type Rejection (Isolated Subprocess)",
         category: "security",
         armBPassed: false,
         armCPassed: true,
         armBDetail: '{"ok":true,"value":"42"} (string leaked)',
         armCDetail: '{"ok":false,"error":"malformed"}',
-        observationSha256: "f5948b2031cd1ad05491acd6540f5a42abdcb520",
+        observationSha256:
+          "f5948b2031cd1ad05491acd6540f5a42abdcb520a1add762135a862353e4163d",
       },
       {
         id: "extra-tool-block",
-        label: "Extra Tool Block Rejection",
+        label: "Extra Tool Block Rejection (Isolated Subprocess)",
         category: "security",
         armBPassed: false,
         armCPassed: true,
         armBDetail: '{"ok":true} (ignored extra block)',
         armCDetail: '{"ok":false,"error":"malformed"}',
-        observationSha256: "d93e933879f1a8f164a686e83e0cd496cf4d3267",
+        observationSha256:
+          "d93e933879f1a8f164a686e83e0cd496cf4d3267190ffcbc74d4cca46499d5da",
       },
     ],
   },

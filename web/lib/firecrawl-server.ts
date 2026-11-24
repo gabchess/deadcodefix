@@ -32,7 +32,9 @@ export function assertSafePublicUrl(rawUrl: string): URL {
     host.endsWith(".internal") ||
     host.endsWith(".arpa")
   ) {
-    throw new Error("Only public HTTPS URLs without credentials or private hosts are allowed.");
+    throw new Error(
+      "Only public HTTPS URLs without credentials or private hosts are allowed.",
+    );
   }
   return parsed;
 }
@@ -72,15 +74,18 @@ export async function runDeveloperIndexSearch(
   query: string;
   skillsOnly: boolean;
   retrievedAt: string;
+  partial: boolean;
+  coverage: Record<string, string> | null;
   hits: DeveloperSearchHit[];
   receiptSha256: string;
 }> {
-  const apiKey = cleanSecret(input.byokApiKey) || cleanSecret(process.env.FIRECRAWL_API_KEY);
+  const apiKey =
+    cleanSecret(input.byokApiKey) || cleanSecret(process.env.FIRECRAWL_API_KEY);
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
-  if (apiKey.trim().length > 0) {
-    headers.Authorization = `Bearer ${apiKey.trim()}`;
+  if (apiKey.length > 0) {
+    headers.Authorization = `Bearer ${apiKey}`;
   }
 
   const body: Record<string, unknown> = {
@@ -109,6 +114,8 @@ export async function runDeveloperIndexSearch(
   }
 
   const json = (await response.json()) as {
+    partial?: boolean;
+    coverage?: Record<string, string>;
     results?: Array<{
       id?: string;
       url?: string;
@@ -155,13 +162,18 @@ export async function runDeveloperIndexSearch(
   }
 
   const retrievedAt = new Date().toISOString();
+  const coverage =
+    json.coverage && typeof json.coverage === "object" ? json.coverage : null;
+  const partial = Boolean(json.partial);
   return {
-    mode: apiKey.trim().length > 0 ? "live-keyed" : "live-keyless",
+    mode: apiKey.length > 0 ? "live-keyed" : "live-keyless",
     query: input.query,
     skillsOnly: input.skillsOnly,
     retrievedAt,
+    partial,
+    coverage,
     hits,
-    receiptSha256: sha256Hex(JSON.stringify({ retrievedAt, hits })),
+    receiptSha256: sha256Hex(JSON.stringify({ retrievedAt, partial, coverage, hits })),
   };
 }
 
@@ -198,28 +210,37 @@ const DRIFT_SCHEMA = {
   required: ["sdkOrHarness", "breakingChanges", "obsoleteWorkarounds"],
 };
 
+const ValidChangeStatusSchema = z.enum(["new", "same", "changed", "removed"]);
+
 export async function runLiveChangeTrackingScan(
   input: z.infer<typeof DriftScanRequestSchema>,
 ) {
   const safeUrl = assertSafePublicUrl(input.url);
-  const apiKey = cleanSecret(input.byokApiKey) || cleanSecret(process.env.FIRECRAWL_API_KEY);
-  if (!apiKey.trim()) {
+  const apiKey =
+    cleanSecret(input.byokApiKey) || cleanSecret(process.env.FIRECRAWL_API_KEY);
+  if (!apiKey) {
     throw new Error(
       "Live Firecrawl Change Tracking & Map requires FIRECRAWL_API_KEY (configured on Vercel or entered in the in-memory BYOK field).",
     );
   }
 
-  const client = new Firecrawl({ apiKey: apiKey.trim() });
+  const client = new Firecrawl({ apiKey });
+  const prompt =
+    "Extract breaking API/SDK changes, renamed or removed parameters, and obsolete legacy prompt or parser workarounds.";
 
-  const [scrapeRes, mapRes] = await Promise.all([
+  const [scrapeRes, mapOutcome] = await Promise.all([
     client.scrape(safeUrl.toString(), {
       formats: [
         "markdown",
         {
+          type: "json",
+          prompt,
+          schema: DRIFT_SCHEMA,
+        } as unknown as "json",
+        {
           type: "changeTracking",
           modes: ["git-diff", "json"],
-          prompt:
-            "Extract breaking API/SDK changes, renamed or removed parameters, and obsolete legacy prompt or parser workarounds.",
+          prompt,
           schema: DRIFT_SCHEMA,
           tag: input.tag,
         } as unknown as "changeTracking",
@@ -230,7 +251,18 @@ export async function runLiveChangeTrackingScan(
         search: input.mapSearch || "migration changelog upgrade tool",
         limit: 8,
       })
-      .catch(() => ({ links: [] })),
+      .then((res) => ({
+        status: "ok" as const,
+        links: Array.isArray(res.links)
+          ? (res.links as Array<string | { url?: string }>)
+          : [],
+        error: null as string | null,
+      }))
+      .catch((err) => ({
+        status: "failed" as const,
+        links: [] as Array<string | { url?: string }>,
+        error: err instanceof Error ? err.message : String(err),
+      })),
   ]);
 
   const markdown =
@@ -246,11 +278,11 @@ export async function runLiveChangeTrackingScan(
     }
   ).changeTracking;
 
-  const rawLinks = Array.isArray(mapRes.links)
-    ? (mapRes.links as Array<string | { url?: string }>)
-    : [];
+  const parsedStatus = ValidChangeStatusSchema.safeParse(tracking?.changeStatus);
+  const changeStatus = parsedStatus.success ? parsedStatus.data : "unavailable";
+
   const mappedUrls: string[] = [];
-  for (const entry of rawLinks) {
+  for (const entry of mapOutcome.links) {
     const candidate = typeof entry === "string" ? entry : entry.url;
     if (!candidate) continue;
     try {
@@ -267,13 +299,16 @@ export async function runLiveChangeTrackingScan(
     url: safeUrl.toString(),
     tag: input.tag,
     retrievedAt,
-    changeStatus: tracking?.changeStatus ?? "new",
+    changeStatus,
     previousScrapeAt: tracking?.previousScrapeAt ?? null,
     gitDiff: tracking?.diff?.text ?? null,
     jsonDiff: tracking?.json ?? {},
+    extractedJson: (scrapeRes as { json?: unknown }).json ?? null,
     markdownExcerpt: markdown.slice(0, 1400),
     bytesRetained: Buffer.byteLength(markdown, "utf8"),
     contentSha256,
+    mapStatus: mapOutcome.status,
+    mapError: mapOutcome.error,
     mappedUrls: [...new Set(mappedUrls)].slice(0, 8),
   };
 }

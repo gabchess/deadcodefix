@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
-import { generateText, type LanguageModel } from "ai";
+import { createGateway, generateText, type LanguageModel } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { z } from "zod";
@@ -25,13 +25,13 @@ function cleanSecret(value: string | undefined): string {
   return value ? value.replace(/[^\x21-\x7e]/g, "").trim() : "";
 }
 
-function getProviderChain(): Array<{
+function getProviderChain(modelId: string): Array<{
   provider: ProviderName;
-  buildModel: (modelId: string) => LanguageModel | string;
+  buildModel: (requestedModelId: string) => LanguageModel;
 }> {
   const chain: Array<{
     provider: ProviderName;
-    buildModel: (modelId: string) => LanguageModel | string;
+    buildModel: (requestedModelId: string) => LanguageModel;
   }> = [];
 
   const oidcToken = cleanSecret(process.env.VERCEL_OIDC_TOKEN);
@@ -39,34 +39,34 @@ function getProviderChain(): Array<{
   const openaiKey = cleanSecret(process.env.OPENAI_API_KEY);
   const openrouterKey = cleanSecret(process.env.OPENROUTER_API_KEY);
 
-  if (oidcToken || gatewayKey) {
+  if (gatewayKey || oidcToken) {
     chain.push({
       provider: "vercel-ai-gateway",
-      buildModel: (modelId) => modelId,
+      buildModel: (requestedModelId) => {
+        const gateway = createGateway({ apiKey: gatewayKey || oidcToken });
+        return gateway(requestedModelId);
+      },
     });
   }
-  if (openaiKey) {
+  if (openaiKey && modelId.startsWith("openai/")) {
     chain.push({
       provider: "openai",
-      buildModel: (modelId) => {
+      buildModel: (requestedModelId) => {
         const openai = createOpenAI({ apiKey: openaiKey });
-        const bare = modelId.startsWith("openai/")
-          ? modelId.slice("openai/".length)
-          : "gpt-5-mini";
-        return openai(bare);
+        return openai(requestedModelId.slice("openai/".length));
       },
     });
   }
   if (openrouterKey) {
     chain.push({
       provider: "openrouter",
-      buildModel: (modelId) => {
+      buildModel: (requestedModelId) => {
         const openrouter = createOpenAICompatible({
           name: "openrouter",
           baseURL: "https://openrouter.ai/api/v1",
           apiKey: openrouterKey,
         });
-        return openrouter.chatModel(modelId);
+        return openrouter.chatModel(requestedModelId);
       },
     });
   }
@@ -85,13 +85,12 @@ export async function POST(request: Request) {
       );
     }
 
-    const chain = getProviderChain();
+    const chain = getProviderChain(parsed.data.modelId);
     if (chain.length === 0) {
       return NextResponse.json(
         {
           status: "blocked",
-          error:
-            "No live LLM credentials configured on server (AI_GATEWAY_API_KEY / VERCEL_OIDC_TOKEN, OPENAI_API_KEY, or OPENROUTER_API_KEY).",
+          error: `No compatible live LLM provider credentials configured for ${parsed.data.modelId}.`,
         },
         { status: 403 },
       );

@@ -28,6 +28,9 @@ export interface FirecrawlDriftSnapshot {
 
 export interface HarnessUpgradeCase {
   id: string;
+  mode: "replay";
+  verificationKind: "static-contract";
+  patchFilePath: string;
   title: string;
   harnessEcosystem: string;
   targetUpgrade: string;
@@ -42,6 +45,7 @@ export interface HarnessUpgradeCase {
   firecrawlDrift: FirecrawlDriftSnapshot;
   checks: HarnessCheckResult[];
   verifyArtifact: (source: string) => {
+    verificationKind: "static-contract";
     passed: number;
     total: number;
     checks: Array<{ id: string; passed: boolean; detail: string }>;
@@ -134,11 +138,11 @@ export function parseToolPayload(input: string): { ok: boolean; value?: number; 
   }
 }`;
 
-const PI_REPAIR_PATCH = `diff --git a/packages/pi-pstack/src/tool-adapter.ts b/packages/pi-pstack/src/tool-adapter.ts
-index 4a18c2e..9f30b14 100644
---- a/packages/pi-pstack/src/tool-adapter.ts
-+++ b/packages/pi-pstack/src/tool-adapter.ts
-@@ -1,37 +1,39 @@
+const PI_REPAIR_PATCH = `diff --git a/tool-adapter.ts b/tool-adapter.ts
+index 373c9ea..6f9fd25 100644
+--- a/tool-adapter.ts
++++ b/tool-adapter.ts
+@@ -1,28 +1,25 @@
 -// pi-pstack tool-loop adapter (AI SDK v4 legacy harness)
 -import { generateText, tool } from "ai";
 +// pi-pstack tool-loop adapter (AI SDK v6+ repaired & pruned)
@@ -147,19 +151,18 @@ index 4a18c2e..9f30b14 100644
  
 -// DEAD WORKAROUND (2024): strip markdown fences around JSON tool payloads
 -export function stripLegacyMarkdownFences(raw: string): string {
--  const fenced = raw.match(/\`\`\`(?:json)?\\s*([\\s\\S]*?)\`\`\`/i);
+-  const fenced = raw.match(/\\\`\\\`\\\`(?:json)?\\s*([\\s\\S]*?)\\\`\\\`\\\`/i);
 -  return fenced ? fenced[1].trim() : raw.trim();
 -}
--
++export const SYSTEM_PROMPT =
++  "You are a Pi coding agent running pstack playbooks. Return schema-valid tool calls.";
+ 
 -export const SYSTEM_PROMPT_SEDIMENT = [
 -  "You are a Pi coding agent running pstack playbooks.",
 -  "CRITICAL: NEVER wrap tool JSON in triple backticks.",
 -  "CRITICAL: ALWAYS repeat the schema keys in exact order.",
 -  "CRITICAL: If the tool returns an array, ignore extra fields.",
 -].join("\\n");
-+export const SYSTEM_PROMPT =
-+  "You are a Pi coding agent running pstack playbooks. Return schema-valid tool calls.";
-+
 +const ToolValueSchema = z.object({ value: z.number().finite() }).strict();
 +const ContentBlockSchema = z.object({
 +  content: z
@@ -180,8 +183,7 @@ index 4a18c2e..9f30b14 100644
          execute: async ({ path }: { path: string }) => ({ ok: true, path }),
        }),
      },
-   };
- }
+@@ -31,9 +28,14 @@ export function buildPiToolConfig() {
  
  export function parseToolPayload(input: string): { ok: boolean; value?: number; error?: string } {
    try {
@@ -199,7 +201,7 @@ index 4a18c2e..9f30b14 100644
    } catch {
      return { ok: false, error: "malformed" };
    }
- }`;
+`;
 
 export function verifyPiHarnessSource(source: string) {
   const checks = [
@@ -254,6 +256,7 @@ export function verifyPiHarnessSource(source: string) {
     },
   ];
   return {
+    verificationKind: "static-contract" as const,
     passed: checks.filter((c) => c.passed).length,
     total: checks.length,
     checks,
@@ -294,15 +297,18 @@ Do not return \`{ error: string }\` shapes for components to unpack.
 Every API route, CLI boundary, and Firecrawl webhook payload must be validated with Zod.`;
 
 const MATT_STANDARDS_PATCH = `diff --git a/CODING_STANDARDS.md b/CODING_STANDARDS.md
-index 8d21a03..1e44c77 100644
+index 6d45936..2301eca 100644
 --- a/CODING_STANDARDS.md
 +++ b/CODING_STANDARDS.md
-@@ -1,19 +1,10 @@
+@@ -1,20 +1,11 @@
 -# CODING_STANDARDS.md (Bloated — 420-line sediment sample)
--
++# CODING_STANDARDS.md (Pruned — Deterministic Checks Own the Rest)
+ 
 -## 1. Never use \`any\` or non-null assertions \`!\`
 -Do not write \`any\` or \`!\` anywhere in TypeScript files.
--
++> Rules already enforced deterministically by \`tsc\`, \`eslint\`, and \`prettier\` were pruned
++> (see \`eslint.config.js\` -> \`no-explicit-any\`, \`no-non-null-assertion\`, \`no-unused-vars\`).
+ 
 -## 2. Never leave unused variables or imports
 -Always double check imports before finishing a PR.
 -
@@ -310,11 +316,6 @@ index 8d21a03..1e44c77 100644
 -Make sure every file is formatted properly with 2-space indentation.
 -
 -## 4. Fail with a thrown response, not a return value
-+# CODING_STANDARDS.md (Pruned — Deterministic Checks Own the Rest)
-+
-+> Rules already enforced deterministically by \`tsc\`, \`eslint\`, and \`prettier\` were pruned
-+> (see \`eslint.config.js\` -> \`no-explicit-any\`, \`no-non-null-assertion\`, \`no-unused-vars\`).
-+
 +## 1. Fail with a thrown response, not a return value
  A loader or an action that cannot continue throws a typed HTTP response.
  Do not return \`{ error: string }\` shapes for components to unpack.
@@ -324,7 +325,8 @@ index 8d21a03..1e44c77 100644
  Every API route, CLI boundary, and Firecrawl webhook payload must be validated with Zod.
 -
 -## 6. [LEGACY GPT-4 WORKAROUND] Always print "FINAL_ANSWER:" before finishing
--Repeat your plan three times before editing files so the parser catches your output.`;
+-Repeat your plan three times before editing files so the parser catches your output.
+`;
 
 export function verifyStandardsPruneSource(source: string) {
   const checks = [
@@ -358,6 +360,7 @@ export function verifyStandardsPruneSource(source: string) {
     },
   ];
   return {
+    verificationKind: "static-contract" as const,
     passed: checks.filter((c) => c.passed).length,
     total: checks.length,
     checks,
@@ -367,6 +370,9 @@ export function verifyStandardsPruneSource(source: string) {
 export const HARNESS_UPGRADE_CASES: HarnessUpgradeCase[] = [
   {
     id: "pi-sdk-tool-upgrade",
+    mode: "replay",
+    verificationKind: "static-contract",
+    patchFilePath: "tool-adapter.ts",
     title: "Pi / pstack Harness: AI SDK v4 → v6+ Upgrade & Dead-Shim Removal",
     harnessEcosystem: "Pi Coding Agent + pi-pstack + Vercel AI SDK",
     targetUpgrade: "ai@4.x → ai@6.x + openai/gpt-5-mini",
@@ -460,6 +466,9 @@ export const HARNESS_UPGRADE_CASES: HarnessUpgradeCase[] = [
   },
   {
     id: "matt-coding-standards-prune",
+    mode: "replay",
+    verificationKind: "static-contract",
+    patchFilePath: "CODING_STANDARDS.md",
     title:
       "Software Factory: Pruning CODING_STANDARDS.md & Dead Prompt Sediment",
     harnessEcosystem: "Matt Pocock Software Factories + pstack /code-review",

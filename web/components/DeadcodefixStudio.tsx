@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   CheckCircle2,
   XCircle,
@@ -35,6 +35,8 @@ interface LiveDevResponse {
   query: string;
   skillsOnly: boolean;
   retrievedAt: string;
+  partial?: boolean;
+  coverage?: Record<string, string> | null;
   hits: LiveDevHit[];
   receiptSha256: string;
 }
@@ -51,6 +53,8 @@ interface LiveDriftResponse {
   markdownExcerpt: string;
   bytesRetained: number;
   contentSha256: string;
+  mapStatus?: "ok" | "failed";
+  mapError?: string | null;
   mappedUrls: string[];
 }
 
@@ -118,6 +122,12 @@ export default function DeadcodefixStudio() {
   const [llmError, setLlmError] = useState<string | null>(null);
   const [llmResult, setLlmResult] = useState<LiveLlmResponse | null>(null);
 
+  // Request-generation & abort guards (prevent stale out-of-order UI updates)
+  const devReqIdRef = useRef<number>(0);
+  const devAbortRef = useRef<AbortController | null>(null);
+  const llmReqIdRef = useRef<number>(0);
+  const llmAbortRef = useRef<AbortController | null>(null);
+
   const currentCase: DemoCase =
     DEMO_CASES.find((c) => c.id === selectedId) ?? DEMO_CASES[0];
 
@@ -132,6 +142,11 @@ export default function DeadcodefixStudio() {
   ) {
     const q = overrideQuery ?? devQuery;
     const sOnly = overrideSkillsOnly ?? skillsOnly;
+    devAbortRef.current?.abort();
+    const controller = new AbortController();
+    devAbortRef.current = controller;
+    const reqId = ++devReqIdRef.current;
+
     setDevLoading(true);
     setDevError(null);
     try {
@@ -144,14 +159,20 @@ export default function DeadcodefixStudio() {
           skillsOnly: sOnly,
           byokApiKey: byokKey || undefined,
         }),
+        signal: controller.signal,
       });
       const data = await res.json();
+      if (reqId !== devReqIdRef.current) return;
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       setDevResult(data as LiveDevResponse);
     } catch (err) {
+      if (reqId !== devReqIdRef.current) return;
+      if (err instanceof Error && err.name === "AbortError") return;
       setDevError(err instanceof Error ? err.message : "Search failed");
     } finally {
-      setDevLoading(false);
+      if (reqId === devReqIdRef.current) {
+        setDevLoading(false);
+      }
     }
   }
 
@@ -179,6 +200,11 @@ export default function DeadcodefixStudio() {
   }
 
   async function handleLiveLlmAudit() {
+    llmAbortRef.current?.abort();
+    const controller = new AbortController();
+    llmAbortRef.current = controller;
+    const reqId = ++llmReqIdRef.current;
+
     setLlmLoading(true);
     setLlmError(null);
     try {
@@ -191,14 +217,20 @@ export default function DeadcodefixStudio() {
           evidenceSummary: `${currentCase.firecrawl.sourceUrl}\n${currentCase.firecrawl.gitDiff}`,
           modelId: llmModel,
         }),
+        signal: controller.signal,
       });
       const data = await res.json();
+      if (reqId !== llmReqIdRef.current) return;
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       setLlmResult(data as LiveLlmResponse);
     } catch (err) {
+      if (reqId !== llmReqIdRef.current) return;
+      if (err instanceof Error && err.name === "AbortError") return;
       setLlmError(err instanceof Error ? err.message : "LLM audit failed");
     } finally {
-      setLlmLoading(false);
+      if (reqId === llmReqIdRef.current) {
+        setLlmLoading(false);
+      }
     }
   }
 
@@ -288,7 +320,10 @@ export default function DeadcodefixStudio() {
                 key={item.id}
                 type="button"
                 onClick={() => {
+                  llmAbortRef.current?.abort();
+                  llmReqIdRef.current++;
                   setSelectedId(item.id);
+                  setLlmLoading(false);
                   setLlmResult(null);
                   setLlmError(null);
                 }}
@@ -685,9 +720,14 @@ export default function DeadcodefixStudio() {
             {activeTab === "verifier" && (
               <div className="space-y-4">
                 <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-3.5 text-xs text-slate-300">
-                  <strong>Supervisor Rule:</strong> Candidate self-reported pass claims are ignored.
-                  Every check below compares exact serialized outputs from Arm B (unpatched upgrade)
-                  against Arm C (repaired + pruned) and retains an immutable SHA-256 observation hash.
+                  <strong>
+                    {currentCase.verificationKind === "isolated-replay"
+                      ? "Isolated Subprocess Replay:"
+                      : "Static Contract Checks (Synthetic Replay):"}
+                  </strong>{" "}
+                  {currentCase.verificationKind === "isolated-replay"
+                    ? "Candidate self-reported pass claims are ignored. Every check below executes inside a restricted subprocess and retains an immutable 64-character SHA-256 observation hash."
+                    : "These checks verify exact static source contracts and git-apply patch integrity without executing untrusted target code on the host. Live behavioral verification requires an approved isolated sandbox."}
                 </div>
 
                 <div className="overflow-x-auto rounded-xl border border-slate-800">
@@ -948,6 +988,11 @@ export default function DeadcodefixStudio() {
                         <span>changeStatus: {driftResult.changeStatus}</span>
                         <span>bytes: {driftResult.bytesRetained.toLocaleString()}</span>
                         <span>sha256: {driftResult.contentSha256.slice(0, 16)}…</span>
+                        {driftResult.mapStatus === "failed" && (
+                          <span className="text-amber-300">
+                            mapStatus: failed ({driftResult.mapError ?? "partial success"})
+                          </span>
+                        )}
                       </div>
                       {driftResult.gitDiff && (
                         <pre className="max-h-48 overflow-auto rounded bg-slate-950 p-3 text-[11px] text-emerald-200">

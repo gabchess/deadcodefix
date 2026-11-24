@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { generateText, type LanguageModel } from "ai";
+import { createGateway, generateText, type LanguageModel } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 
@@ -38,6 +38,7 @@ export interface RouterCallReceipt {
   rawResponseSha256: string | null;
   inputTokens: number;
   outputTokens: number;
+  reservedCostUsd: number;
   estimatedCostUsd: number;
   latencyMs: number;
   blockReason?: string;
@@ -80,12 +81,28 @@ export function estimateCallCostUsd(
   );
 }
 
-export function resolveProviderOrder(creds: RouterCredentials): ProviderName[] {
+export function estimateConservativeReservationUsd(
+  modelId: string,
+  system: string | undefined,
+  prompt: string,
+  maxOutputTokens: number,
+): number {
+  const promptChars = (system?.length ?? 0) + prompt.length;
+  // Conservative 2 chars/token upper bound for input tokens
+  const conservativeInputTokens = Math.max(1, Math.ceil(promptChars / 2));
+  return estimateCallCostUsd(modelId, conservativeInputTokens, maxOutputTokens);
+}
+
+export function resolveProviderOrder(
+  creds: RouterCredentials,
+  modelId?: string,
+): ProviderName[] {
   const order: ProviderName[] = [];
   if (creds.vercelOidcToken?.trim() || creds.vercelGatewayApiKey?.trim()) {
     order.push("vercel-ai-gateway");
   }
-  if (creds.openaiApiKey?.trim()) {
+  const supportsDirectOpenAI = !modelId || modelId.startsWith("openai/");
+  if (creds.openaiApiKey?.trim() && supportsDirectOpenAI) {
     order.push("openai");
   }
   if (creds.openrouterApiKey?.trim()) {
@@ -98,17 +115,21 @@ function buildModelForProvider(
   provider: ProviderName,
   modelId: string,
   creds: RouterCredentials,
-): LanguageModel | string {
+): LanguageModel {
   if (provider === "vercel-ai-gateway") {
-    // Plain "provider/model" strings route automatically through Vercel AI Gateway in AI SDK v6+
-    return modelId;
+    const gatewayKey =
+      creds.vercelGatewayApiKey?.trim() || creds.vercelOidcToken?.trim();
+    const gateway = createGateway(gatewayKey ? { apiKey: gatewayKey } : {});
+    return gateway(modelId);
   }
   if (provider === "openai") {
+    if (!modelId.startsWith("openai/")) {
+      throw new Error(
+        `Direct OpenAI provider cannot serve non-OpenAI model ${modelId}`,
+      );
+    }
     const openai = createOpenAI({ apiKey: creds.openaiApiKey });
-    const bareModel = modelId.startsWith("openai/")
-      ? modelId.slice("openai/".length)
-      : "gpt-5-mini";
-    return openai(bareModel);
+    return openai(modelId.slice("openai/".length));
   }
   const openrouter = createOpenAICompatible({
     name: "openrouter",
@@ -164,8 +185,16 @@ export async function generateWithFallback(
   const startedAt = Date.now();
   const maxUsdCap = request.maxUsdCap ?? 50;
   const spentUsdSoFar = request.spentUsdSoFar ?? 0;
+  const maxOutputTokens = request.maxOutputTokens ?? 2048;
 
-  if (spentUsdSoFar >= maxUsdCap || maxUsdCap <= 0) {
+  if (
+    !Number.isFinite(maxUsdCap) ||
+    !Number.isFinite(spentUsdSoFar) ||
+    !Number.isFinite(maxOutputTokens) ||
+    maxUsdCap <= 0 ||
+    spentUsdSoFar < 0 ||
+    maxOutputTokens <= 0
+  ) {
     return {
       status: "blocked",
       providerUsed: null,
@@ -176,13 +205,42 @@ export async function generateWithFallback(
       rawResponseSha256: null,
       inputTokens: 0,
       outputTokens: 0,
+      reservedCostUsd: 0,
       estimatedCostUsd: 0,
       latencyMs: Date.now() - startedAt,
-      blockReason: `Budget cap reached ($${spentUsdSoFar.toFixed(4)} / $${maxUsdCap.toFixed(2)})`,
+      blockReason: "Invalid non-finite or non-positive budget/token limit",
     };
   }
 
-  const providers = resolveProviderOrder(creds);
+  const reservedCostUsd = estimateConservativeReservationUsd(
+    request.modelId,
+    request.system,
+    request.prompt,
+    maxOutputTokens,
+  );
+
+  if (
+    spentUsdSoFar >= maxUsdCap ||
+    spentUsdSoFar + reservedCostUsd > maxUsdCap
+  ) {
+    return {
+      status: "blocked",
+      providerUsed: null,
+      modelId: request.modelId,
+      attemptedProviders: [],
+      fallbackErrors: [],
+      text: null,
+      rawResponseSha256: null,
+      inputTokens: 0,
+      outputTokens: 0,
+      reservedCostUsd,
+      estimatedCostUsd: 0,
+      latencyMs: Date.now() - startedAt,
+      blockReason: `Budget cap reached or insufficient remaining allowance (spent $${spentUsdSoFar.toFixed(6)} + reserve $${reservedCostUsd.toFixed(6)} > cap $${maxUsdCap.toFixed(4)})`,
+    };
+  }
+
+  const providers = resolveProviderOrder(creds, request.modelId);
   if (providers.length === 0) {
     return {
       status: "blocked",
@@ -194,10 +252,10 @@ export async function generateWithFallback(
       rawResponseSha256: null,
       inputTokens: 0,
       outputTokens: 0,
+      reservedCostUsd,
       estimatedCostUsd: 0,
       latencyMs: Date.now() - startedAt,
-      blockReason:
-        "No LLM provider credentials configured (set AI_GATEWAY_API_KEY / VERCEL_OIDC_TOKEN, OPENAI_API_KEY, or OPENROUTER_API_KEY)",
+      blockReason: `No compatible LLM provider credentials configured for ${request.modelId}`,
     };
   }
 
@@ -213,7 +271,7 @@ export async function generateWithFallback(
         model,
         system: request.system,
         prompt: request.prompt,
-        maxOutputTokens: request.maxOutputTokens ?? 2048,
+        maxOutputTokens,
         temperature: request.modelId.startsWith("openai/gpt-5")
           ? undefined
           : (request.temperature ?? 0),
@@ -235,6 +293,7 @@ export async function generateWithFallback(
           .digest("hex"),
         inputTokens: output.inputTokens,
         outputTokens: output.outputTokens,
+        reservedCostUsd,
         estimatedCostUsd,
         latencyMs: Date.now() - startedAt,
       };
@@ -256,6 +315,7 @@ export async function generateWithFallback(
     rawResponseSha256: null,
     inputTokens: 0,
     outputTokens: 0,
+    reservedCostUsd,
     estimatedCostUsd: 0,
     latencyMs: Date.now() - startedAt,
   };
