@@ -213,8 +213,10 @@ export async function generateWithFallback(
         model,
         system: request.system,
         prompt: request.prompt,
-        maxOutputTokens: request.maxOutputTokens ?? 1024,
-        temperature: request.temperature ?? 0,
+        maxOutputTokens: request.maxOutputTokens ?? 2048,
+        temperature: request.modelId.startsWith("openai/gpt-5")
+          ? undefined
+          : (request.temperature ?? 0),
       });
       const estimatedCostUsd = estimateCallCostUsd(
         request.modelId,

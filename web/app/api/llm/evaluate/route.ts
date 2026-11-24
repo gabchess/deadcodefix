@@ -100,13 +100,16 @@ export async function POST(request: Request) {
     const errors: Array<{ provider: ProviderName; message: string }> = [];
     for (const entry of chain) {
       try {
+        const isGpt5 = parsed.data.modelId.startsWith("openai/gpt-5");
         const result = await generateText({
           model: entry.buildModel(parsed.data.modelId),
           system:
             "You are an independent AI harness upgrade auditor following Matt Pocock's /code-review discipline. Be concise, grounded strictly in the provided Firecrawl evidence and unified diff. Identify: (1) upgrade correctness, (2) dead workarounds safely deleted, (3) any remaining risk.",
           prompt: `Case: ${parsed.data.caseTitle}\n\nFirecrawl Evidence:\n${parsed.data.evidenceSummary}\n\nExact repair.patch:\n${parsed.data.diffText}`,
-          maxOutputTokens: 500,
-          temperature: 0,
+          maxOutputTokens: 2048,
+          ...(isGpt5
+            ? { providerOptions: { openai: { reasoningEffort: "low" } } }
+            : { temperature: 0 }),
         });
         return NextResponse.json({
           status: "completed",
