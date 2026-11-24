@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build & Next.js
+.next/
+out/
+dist/
+build/
+
+# Local environment secrets (NEVER commit)
+.env
+.env.local
+.env.*.local
+
+# Generated run outputs & temp artifacts
+artifacts/
+.vercel/
+*.log
+.DS_Store
+Thumbs.db

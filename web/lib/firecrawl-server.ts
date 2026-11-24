@@ -1,0 +1,275 @@
+import { createHash } from "node:crypto";
+import { isIP } from "node:net";
+import { Firecrawl } from "firecrawl";
+import { z } from "zod";
+
+export function sha256Hex(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+export function assertSafePublicUrl(rawUrl: string): URL {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error(`Invalid URL: ${rawUrl}`);
+  }
+  const host = parsed.hostname.toLowerCase();
+  const bareHost = host.replace(/^\[|\]$/g, "");
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.username !== "" ||
+    parsed.password !== "" ||
+    parsed.port !== "" ||
+    isIP(bareHost) !== 0 ||
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host.endsWith(".local") ||
+    host.endsWith(".internal") ||
+    host.endsWith(".arpa")
+  ) {
+    throw new Error("Only public HTTPS URLs without credentials or private hosts are allowed.");
+  }
+  return parsed;
+}
+
+export const DeveloperSearchRequestSchema = z.object({
+  query: z.string().trim().min(2).max(240),
+  limit: z.number().int().min(1).max(12).optional().default(6),
+  skillsOnly: z.boolean().optional().default(false),
+  types: z
+    .array(z.enum(["doc", "issue", "pull_request", "readme"]))
+    .optional(),
+  byokApiKey: z.string().trim().max(200).optional(),
+});
+
+export interface DeveloperSearchHit {
+  id: string;
+  kind: "doc" | "issue" | "pull_request" | "readme" | "web";
+  url: string;
+  title: string;
+  passages: string[];
+  sha256: string;
+}
+
+function inferKind(id: string | undefined): DeveloperSearchHit["kind"] {
+  if (!id) return "doc";
+  if (id.startsWith("issue:")) return "issue";
+  if (id.startsWith("pull_request:")) return "pull_request";
+  if (id.startsWith("readme:")) return "readme";
+  if (id.startsWith("web:")) return "web";
+  return "doc";
+}
+
+export async function runDeveloperIndexSearch(
+  input: z.infer<typeof DeveloperSearchRequestSchema>,
+): Promise<{
+  mode: "live-keyed" | "live-keyless";
+  query: string;
+  skillsOnly: boolean;
+  retrievedAt: string;
+  hits: DeveloperSearchHit[];
+  receiptSha256: string;
+}> {
+  const apiKey = input.byokApiKey || process.env.FIRECRAWL_API_KEY || "";
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (apiKey.trim().length > 0) {
+    headers.Authorization = `Bearer ${apiKey.trim()}`;
+  }
+
+  const body: Record<string, unknown> = {
+    query: input.query,
+    k: input.limit,
+    passages: 2,
+  };
+  if (input.skillsOnly) {
+    body.skills = "only";
+  } else if (input.types && input.types.length > 0) {
+    body.types = input.types;
+  }
+
+  const response = await fetch("https://api.firecrawl.dev/v2/search/developer", {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(20000),
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(
+      `Firecrawl Developer Index returned HTTP ${response.status}${text ? `: ${text.slice(0, 160)}` : ""}`,
+    );
+  }
+
+  const json = (await response.json()) as {
+    results?: Array<{
+      id?: string;
+      url?: string;
+      title?: string;
+      description?: string;
+      passages?: Array<string | { text?: string; markdown?: string }>;
+    }>;
+    data?: Array<{
+      id?: string;
+      url?: string;
+      title?: string;
+      description?: string;
+      passages?: Array<string | { text?: string; markdown?: string }>;
+    }>;
+  };
+
+  const rawItems = json.results ?? json.data ?? [];
+  const hits: DeveloperSearchHit[] = [];
+
+  for (const item of rawItems) {
+    if (!item.url) continue;
+    try {
+      const safe = assertSafePublicUrl(item.url);
+      const passages = (item.passages ?? [])
+        .map((p) => (typeof p === "string" ? p : (p.markdown ?? p.text ?? "")))
+        .filter((p) => p.length > 0)
+        .slice(0, 2);
+      if (passages.length === 0 && item.description) {
+        passages.push(item.description);
+      }
+      const id = item.id ?? `doc:${safe.hostname}${safe.pathname}`;
+      const title = (item.title ?? safe.toString()).trim();
+      hits.push({
+        id,
+        kind: inferKind(id),
+        url: safe.toString(),
+        title,
+        passages,
+        sha256: sha256Hex(`${id}\n${safe.toString()}\n${passages.join("\n")}`),
+      });
+    } catch {
+      // Skip unsafe URLs
+    }
+  }
+
+  const retrievedAt = new Date().toISOString();
+  return {
+    mode: apiKey.trim().length > 0 ? "live-keyed" : "live-keyless",
+    query: input.query,
+    skillsOnly: input.skillsOnly,
+    retrievedAt,
+    hits,
+    receiptSha256: sha256Hex(JSON.stringify({ retrievedAt, hits })),
+  };
+}
+
+export const DriftScanRequestSchema = z.object({
+  url: z.string().trim().url(),
+  tag: z.string().trim().min(2).max(64).optional().default("deadcodefix-live"),
+  mapSearch: z.string().trim().max(80).optional(),
+  byokApiKey: z.string().trim().max(200).optional(),
+});
+
+const DRIFT_SCHEMA = {
+  type: "object",
+  properties: {
+    sdkOrHarness: { type: "string" },
+    versionRange: { type: "string" },
+    breakingChanges: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          symbol: { type: "string" },
+          changeKind: { type: "string" },
+          summary: { type: "string" },
+          migrationAction: { type: "string" },
+        },
+        required: ["symbol", "summary", "migrationAction"],
+      },
+    },
+    obsoleteWorkarounds: {
+      type: "array",
+      items: { type: "string" },
+    },
+  },
+  required: ["sdkOrHarness", "breakingChanges", "obsoleteWorkarounds"],
+};
+
+export async function runLiveChangeTrackingScan(
+  input: z.infer<typeof DriftScanRequestSchema>,
+) {
+  const safeUrl = assertSafePublicUrl(input.url);
+  const apiKey = input.byokApiKey || process.env.FIRECRAWL_API_KEY || "";
+  if (!apiKey.trim()) {
+    throw new Error(
+      "Live Firecrawl Change Tracking & Map requires FIRECRAWL_API_KEY (configured on Vercel or entered in the in-memory BYOK field).",
+    );
+  }
+
+  const client = new Firecrawl({ apiKey: apiKey.trim() });
+
+  const [scrapeRes, mapRes] = await Promise.all([
+    client.scrape(safeUrl.toString(), {
+      formats: [
+        "markdown",
+        {
+          type: "changeTracking",
+          modes: ["git-diff", "json"],
+          prompt:
+            "Extract breaking API/SDK changes, renamed or removed parameters, and obsolete legacy prompt or parser workarounds.",
+          schema: DRIFT_SCHEMA,
+          tag: input.tag,
+        } as unknown as "changeTracking",
+      ],
+    }),
+    client
+      .map(safeUrl.origin, {
+        search: input.mapSearch || "migration changelog upgrade tool",
+        limit: 8,
+      })
+      .catch(() => ({ links: [] })),
+  ]);
+
+  const markdown =
+    typeof scrapeRes.markdown === "string" ? scrapeRes.markdown : "";
+  const tracking = (
+    scrapeRes as {
+      changeTracking?: {
+        changeStatus?: string;
+        previousScrapeAt?: string | null;
+        diff?: { text?: string };
+        json?: Record<string, { previous: unknown; current: unknown }>;
+      };
+    }
+  ).changeTracking;
+
+  const rawLinks = Array.isArray(mapRes.links)
+    ? (mapRes.links as Array<string | { url?: string }>)
+    : [];
+  const mappedUrls: string[] = [];
+  for (const entry of rawLinks) {
+    const candidate = typeof entry === "string" ? entry : entry.url;
+    if (!candidate) continue;
+    try {
+      mappedUrls.push(assertSafePublicUrl(candidate).toString());
+    } catch {
+      // ignore invalid
+    }
+  }
+
+  const retrievedAt = new Date().toISOString();
+  const contentSha256 = sha256Hex(markdown);
+  return {
+    mode: "live" as const,
+    url: safeUrl.toString(),
+    tag: input.tag,
+    retrievedAt,
+    changeStatus: tracking?.changeStatus ?? "new",
+    previousScrapeAt: tracking?.previousScrapeAt ?? null,
+    gitDiff: tracking?.diff?.text ?? null,
+    jsonDiff: tracking?.json ?? {},
+    markdownExcerpt: markdown.slice(0, 1400),
+    bytesRetained: Buffer.byteLength(markdown, "utf8"),
+    contentSha256,
+    mappedUrls: [...new Set(mappedUrls)].slice(0, 8),
+  };
+}
