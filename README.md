@@ -33,6 +33,13 @@ List built-in open-source harness upgrade cases (Pi / `pi-pstack`, Matt Pocock S
 node src/cli/main.ts cases
 ```
 
+Generate a human-gated dry-run Pull Request draft (Summary sketch, Before/After evidence, Merge Danger Door + Blast Radius) and a 5-category Software Factory Retrospective:
+
+```bash
+node src/cli/main.ts pr --case pi-sdk-tool-upgrade --dry-run --repo gabchess/deadcodefix
+node src/cli/main.ts retro --case pi-sdk-tool-upgrade
+```
+
 Run a live Firecrawl documentation drift + Developer Index scan (set `FIRECRAWL_API_KEY` in `.env.local`):
 
 ```bash

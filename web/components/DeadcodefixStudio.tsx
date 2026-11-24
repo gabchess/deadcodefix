@@ -126,6 +126,7 @@ export default function DeadcodefixStudio() {
   const [llmError, setLlmError] = useState<string | null>(null);
   const [llmResult, setLlmResult] = useState<LiveLlmResponse | null>(null);
   const [copiedPr, setCopiedPr] = useState<boolean>(false);
+  const [copyError, setCopyError] = useState<string | null>(null);
 
   // Request-generation & abort guards (prevent stale out-of-order UI updates)
   const devReqIdRef = useRef<number>(0);
@@ -1040,28 +1041,84 @@ export default function DeadcodefixStudio() {
                 : hasSecurity
                   ? "Medium"
                   : "Small";
+              const mergeRationale = isDocsOnly
+                ? "Modifies review-policy markdown only; trivial to revert via git revert without runtime impact."
+                : hasSecurity
+                  ? "Updates tool schema parsing and removes legacy regex shim; easily reverted, but touches untrusted payload boundary."
+                  : "Scoped adapter update with preserved legacy compatibility; cleanly reversible.";
+              const reviewPriority = isDocsOnly
+                ? "Low — fast human scan of kept architectural rules"
+                : hasSecurity
+                  ? "Medium — verify strict Zod boundary & legacy compatibility checks"
+                  : "Low — confirm passing automated checks";
               const prTitle = `fix(${currentCase.id}): upgrade harness & prune ${currentCase.deadWorkaroundsRemoved.length} dead workaround(s)`;
+              const checkRows = currentCase.checks
+                .map(
+                  (c) =>
+                    `| \`${c.id}\` | ${c.armBPassed ? "PASS" : "FAIL"} | ${c.armCPassed ? "PASS" : "FAIL"} | \`${c.observationSha256.slice(0, 12)}\` |`,
+                )
+                .join("\n");
+              const prunedList = currentCase.deadWorkaroundsRemoved
+                .map((w) => `- Pruned: ${w}`)
+                .join("\n");
               const prBody = [
                 `## Summary`,
                 ``,
                 "```text",
                 `Firecrawl Drift (${currentCase.firecrawl.changeStatus}) ──► ${currentCase.targetUpgrade}`,
-                `  ├─ Pruned: ${currentCase.deadWorkaroundsRemoved.length} dead workaround(s) (-${currentCase.tokensSavedPerTurn} tokens/turn)`,
-                `  └─ Checks: Arm B ${armBPassed}/${totalChecks} ──► Arm C ${armCPassed}/${totalChecks} (${currentCase.verificationKind})`,
+                `  ├─ Pruned:   ${currentCase.deadWorkaroundsRemoved.length} dead workaround(s) (-${currentCase.tokensSavedPerTurn} tokens/turn)`,
+                `  └─ Checks:   Arm B ${armBPassed}/${totalChecks} ──► Arm C ${armCPassed}/${totalChecks} (${currentCase.verificationKind}, replay)`,
                 "```",
                 ``,
+                prunedList,
+                ``,
                 `## Evidence (Before → After)`,
-                `- **Firecrawl Source:** ${currentCase.firecrawl.sourceUrl} (\`changeStatus: ${currentCase.firecrawl.changeStatus}\`)`,
+                ``,
+                `- **Provenance Mode:** \`replay\` (\`${currentCase.verificationKind}\`)`,
+                `- **Firecrawl Source:** ${currentCase.firecrawl.sourceUrl} (tag: \`${currentCase.firecrawl.tag}\`, \`changeStatus: ${currentCase.firecrawl.changeStatus}\`)`,
                 `- **Exact Patch SHA-256:** \`${currentCase.patchSha256}\``,
-                `- **Before (Arm B):** ${armBPassed}/${totalChecks} passed · **After (Arm C):** ${armCPassed}/${totalChecks} passed`,
+                `- **Before (Arm B — Unpatched Upgrade):** ${armBPassed}/${totalChecks} checks passed`,
+                `- **After (Arm C — Repaired & Pruned):** ${armCPassed}/${totalChecks} checks passed`,
+                ``,
+                `| Check | Before (Arm B) | After (Arm C) | Digest |`,
+                `| --- | --- | --- | --- |`,
+                checkRows,
                 ``,
                 `## Merge Danger`,
-                `**Door:** ${door} · **Blast Radius:** ${blastRadius}`,
+                ``,
+                `**Door:** ${door}`,
+                ``,
+                `**Blast Radius:** ${blastRadius}`,
+                ``,
+                mergeRationale,
+                ``,
+                `**Recommended Review Attention:** ${reviewPriority}`,
                 ``,
                 `## Human Gate`,
-                `- [ ] Maintainer inspected exact \`repair.patch\` and verified legacy compatibility`,
-                `- [ ] Generated in \`--dry-run\` mode by \`deadcodefix pr\` (never auto-merged)`,
+                ``,
+                `- [ ] Maintainer inspected exact \`repair.patch\` (\`${currentCase.patchSha256.slice(0, 16)}...\`)`,
+                `- [ ] Maintainer verified legacy compatibility check stays green`,
+                `- [ ] Generated in \`--dry-run\` mode by \`deadcodefix pr\`; human approves creation & merge`,
               ].join("\n");
+
+              const handleCopyPr = async () => {
+                setCopyError(null);
+                try {
+                  if (!navigator.clipboard?.writeText) {
+                    throw new Error("Clipboard API unavailable — copy manually from the box below.");
+                  }
+                  await navigator.clipboard.writeText(prBody);
+                  setCopiedPr(true);
+                  setTimeout(() => setCopiedPr(false), 2000);
+                } catch (err) {
+                  setCopiedPr(false);
+                  setCopyError(
+                    err instanceof Error
+                      ? err.message
+                      : "Clipboard permission denied — select and copy manually below.",
+                  );
+                }
+              };
 
               const retroItems = [
                 {
@@ -1123,11 +1180,7 @@ export default function DeadcodefixStudio() {
                       </div>
                       <button
                         type="button"
-                        onClick={() => {
-                          void navigator.clipboard.writeText(prBody);
-                          setCopiedPr(true);
-                          setTimeout(() => setCopiedPr(false), 2000);
-                        }}
+                        onClick={() => void handleCopyPr()}
                         className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:border-emerald-500/50 hover:text-white"
                       >
                         {copiedPr ? (
@@ -1143,6 +1196,12 @@ export default function DeadcodefixStudio() {
                         )}
                       </button>
                     </div>
+
+                    {copyError && (
+                      <p className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-200">
+                        {copyError}
+                      </p>
+                    )}
 
                     <pre className="mt-4 overflow-x-auto whitespace-pre-wrap rounded-lg border border-slate-800 bg-[#0b0e15] p-4 text-xs leading-6 text-slate-200">
                       {prBody}
