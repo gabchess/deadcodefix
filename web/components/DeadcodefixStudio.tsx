@@ -16,10 +16,14 @@ import {
   KeyRound,
   Loader2,
   AlertTriangle,
+  GitPullRequest,
+  Copy,
+  Check,
+  RefreshCw,
 } from "lucide-react";
 import { DEMO_CASES, type DemoCase } from "@/lib/demo-cases";
 
-type TabId = "drift" | "patch" | "verifier" | "live-firecrawl";
+type TabId = "drift" | "patch" | "verifier" | "live-firecrawl" | "pr-retro";
 
 interface LiveDevHit {
   id: string;
@@ -121,6 +125,7 @@ export default function DeadcodefixStudio() {
   const [llmLoading, setLlmLoading] = useState<boolean>(false);
   const [llmError, setLlmError] = useState<string | null>(null);
   const [llmResult, setLlmResult] = useState<LiveLlmResponse | null>(null);
+  const [copiedPr, setCopiedPr] = useState<boolean>(false);
 
   // Request-generation & abort guards (prevent stale out-of-order UI updates)
   const devReqIdRef = useRef<number>(0);
@@ -424,6 +429,7 @@ export default function DeadcodefixStudio() {
               { id: "patch" as const, label: "2. Exact Patch & Bloat Audit", icon: GitCompare },
               { id: "verifier" as const, label: "3. Isolated B-vs-C Verifier", icon: ShieldCheck },
               { id: "live-firecrawl" as const, label: "4. Live Firecrawl Studio", icon: Sparkles },
+              { id: "pr-retro" as const, label: "5. PR & Retro Generator", icon: GitPullRequest },
             ].map((tab) => {
               const Icon = tab.icon;
               const isSelected = activeTab === tab.id;
@@ -1021,6 +1027,177 @@ export default function DeadcodefixStudio() {
                 </div>
               </div>
             )}
+
+            {/* TAB 5: HUMAN-GATED PR & SOFTWARE FACTORY RETRO */}
+            {activeTab === "pr-retro" && (() => {
+              const isDocsOnly = currentCase.id === "matt-coding-standards-prune";
+              const hasSecurity = currentCase.checks.some(
+                (c) => c.category === "security",
+              );
+              const door = "Two-way";
+              const blastRadius = isDocsOnly
+                ? "Small"
+                : hasSecurity
+                  ? "Medium"
+                  : "Small";
+              const prTitle = `fix(${currentCase.id}): upgrade harness & prune ${currentCase.deadWorkaroundsRemoved.length} dead workaround(s)`;
+              const prBody = [
+                `## Summary`,
+                ``,
+                "```text",
+                `Firecrawl Drift (${currentCase.firecrawl.changeStatus}) ──► ${currentCase.targetUpgrade}`,
+                `  ├─ Pruned: ${currentCase.deadWorkaroundsRemoved.length} dead workaround(s) (-${currentCase.tokensSavedPerTurn} tokens/turn)`,
+                `  └─ Checks: Arm B ${armBPassed}/${totalChecks} ──► Arm C ${armCPassed}/${totalChecks} (${currentCase.verificationKind})`,
+                "```",
+                ``,
+                `## Evidence (Before → After)`,
+                `- **Firecrawl Source:** ${currentCase.firecrawl.sourceUrl} (\`changeStatus: ${currentCase.firecrawl.changeStatus}\`)`,
+                `- **Exact Patch SHA-256:** \`${currentCase.patchSha256}\``,
+                `- **Before (Arm B):** ${armBPassed}/${totalChecks} passed · **After (Arm C):** ${armCPassed}/${totalChecks} passed`,
+                ``,
+                `## Merge Danger`,
+                `**Door:** ${door} · **Blast Radius:** ${blastRadius}`,
+                ``,
+                `## Human Gate`,
+                `- [ ] Maintainer inspected exact \`repair.patch\` and verified legacy compatibility`,
+                `- [ ] Generated in \`--dry-run\` mode by \`deadcodefix pr\` (never auto-merged)`,
+              ].join("\n");
+
+              const retroItems = [
+                {
+                  category: "coding-standards",
+                  target: "CODING_STANDARDS.md",
+                  title: "Delete prose rules already enforced by tsc / ESLint / Prettier",
+                  why: "Reserve LLM /code-review context strictly for architectural judgment.",
+                },
+                {
+                  category: "agents-md-pruning",
+                  target: currentCase.id,
+                  title: `Prune ${currentCase.deadWorkaroundsRemoved.length} obsolete workaround(s) (-${currentCase.tokensSavedPerTurn} tokens/turn)`,
+                  why: "Stop paying per-turn token tax for old-model shims superseded by native SDK schemas.",
+                },
+                {
+                  category: "automated-checks",
+                  target: "test/harness-cases.test.ts",
+                  title: "Promote breaking-change & git apply --check into CI gates",
+                  why: "Deterministic checks beat probabilistic prompt reminders on every future upgrade.",
+                },
+                {
+                  category: "tool-economy",
+                  target: "src/firecrawl/drift.ts",
+                  title: `Pin ${currentCase.firecrawl.tag} in Firecrawl changeTracking`,
+                  why: "Turn upstream doc edits into automatic git-diff + JSON drift signals.",
+                },
+                {
+                  category: "navigation",
+                  target: "GLOSSARY.md",
+                  title: "Keep domain glossary & adapter pointers updated",
+                  why: "Helps fresh agent sessions land on the right files in one hop.",
+                },
+              ];
+
+              return (
+                <div className="space-y-6">
+                  {/* Human-Gated PR Draft Card */}
+                  <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-5">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="rounded-full bg-emerald-500/20 px-2.5 py-0.5 font-mono text-[11px] font-semibold text-emerald-300">
+                            deadcodefix pr --case {currentCase.id} --dry-run
+                          </span>
+                          <span className="rounded-full border border-sky-500/30 bg-sky-500/10 px-2.5 py-0.5 font-mono text-[11px] text-sky-300">
+                            Door: {door}
+                          </span>
+                          <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-0.5 font-mono text-[11px] text-amber-300">
+                            Blast Radius: {blastRadius}
+                          </span>
+                        </div>
+                        <h3 className="text-base font-semibold text-white">
+                          {prTitle}
+                        </h3>
+                        <p className="text-xs text-slate-400">
+                          Human-gated dry-run PR draft following Matt Pocock&apos;s{" "}
+                          <code>/pr</code> template (Summary sketch, Before/After evidence, Merge Danger).
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void navigator.clipboard.writeText(prBody);
+                          setCopiedPr(true);
+                          setTimeout(() => setCopiedPr(false), 2000);
+                        }}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:border-emerald-500/50 hover:text-white"
+                      >
+                        {copiedPr ? (
+                          <>
+                            <Check className="h-3.5 w-3.5 text-emerald-400" />
+                            Copied Markdown
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="h-3.5 w-3.5" />
+                            Copy PR Body
+                          </>
+                        )}
+                      </button>
+                    </div>
+
+                    <pre className="mt-4 overflow-x-auto whitespace-pre-wrap rounded-lg border border-slate-800 bg-[#0b0e15] p-4 text-xs leading-6 text-slate-200">
+                      {prBody}
+                    </pre>
+
+                    <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/90 px-3 py-2 font-mono text-[11px] text-sky-300">
+                      $ gh pr create --repo gabchess/deadcodefix --head deadcodefix/
+                      {currentCase.id} --title &quot;{prTitle}&quot; --body-file pr-body.md
+                    </div>
+                  </div>
+
+                  {/* Software Factory Retro Card */}
+                  <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-5">
+                    <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <h3 className="flex items-center gap-2 text-base font-semibold text-white">
+                          <RefreshCw className="h-4 w-4 text-orange-400" />
+                          Software Factory Retrospective (deadcodefix retro --case{" "}
+                          {currentCase.id})
+                        </h3>
+                        <p className="mt-0.5 text-xs text-slate-400">
+                          &ldquo;Never leave the same review comment twice&rdquo; — feeds every
+                          upgrade lesson back into the agent&apos;s environment across 5 categories.
+                        </p>
+                      </div>
+                      <span className="rounded bg-orange-500/15 px-2.5 py-1 font-mono text-[11px] text-orange-300">
+                        .agents/skills/deadcodefix-retro
+                      </span>
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-2">
+                      {retroItems.map((r) => (
+                        <div
+                          key={r.category}
+                          className="rounded-lg border border-slate-800 bg-[#0b0e15] p-3.5"
+                        >
+                          <div className="flex items-center justify-between gap-2 font-mono text-[11px]">
+                            <span className="rounded bg-slate-800 px-2 py-0.5 text-orange-300">
+                              {r.category}
+                            </span>
+                            <span className="text-slate-400">{r.target}</span>
+                          </div>
+                          <p className="mt-2 text-sm font-semibold text-white">
+                            {r.title}
+                          </p>
+                          <p className="mt-1 text-xs leading-relaxed text-slate-400">
+                            {r.why}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         </div>
       </main>

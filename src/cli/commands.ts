@@ -9,6 +9,7 @@ import {
 import { writeReport } from "../prepare-repair/saved-run.ts";
 import { packageRun } from "../prepare-repair/package.ts";
 import { HARNESS_UPGRADE_CASES } from "../harnesses/cases.ts";
+import { buildPrDraft, buildRetroReport } from "../pr-retro/index.ts";
 export async function runCommands(
   args: string[],
   write: (text: string) => void,
@@ -18,6 +19,8 @@ export async function runCommands(
     write(`deadcodefix: Firecrawl-powered model-upgrade & dead-workaround verification
 demo --out PATH
 cases
+pr --case CASE_ID [--dry-run] [--repo OWNER/REPO]
+retro --case CASE_ID
 drift --url HTTPS_URL [--tag TAG] [--query QUERY]
 inspect --repo PATH --ref FULL_SHA
 evidence --case PATH --mode replay
@@ -32,6 +35,75 @@ Read report outcomes separately from command exit codes.
 2: invalid configuration; 3: blocked authority or budget.
 Live mode requires explicit FIRECRAWL_API_KEY and approved LLM spend caps.`);
     return 0;
+  }
+  if (command === "pr") {
+    const options = new Map<string, string>();
+    let dryRunFlag = false;
+    for (let i = 0; i < rest.length; i++) {
+      const token = rest[i];
+      if (token === "--dry-run") {
+        if (dryRunFlag) {
+          write(JSON.stringify({ error: "Duplicate --dry-run option" }));
+          return 2;
+        }
+        dryRunFlag = true;
+        continue;
+      }
+      if (
+        (token === "--case" || token === "--repo") &&
+        rest[i + 1] &&
+        !rest[i + 1].startsWith("--") &&
+        !options.has(token)
+      ) {
+        options.set(token, rest[i + 1]);
+        i++;
+        continue;
+      }
+      write(JSON.stringify({ error: `Invalid pr option: ${token}` }));
+      return 2;
+    }
+    const caseId = options.get("--case");
+    if (!caseId) {
+      write(JSON.stringify({ error: "--case is required for pr" }));
+      return 2;
+    }
+    try {
+      const draft = buildPrDraft({
+        caseId,
+        targetRepo: options.get("--repo"),
+      });
+      write(JSON.stringify(draft, null, 2));
+      return 0;
+    } catch (error) {
+      write(
+        JSON.stringify({
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+      return 2;
+    }
+  }
+  if (command === "retro") {
+    if (
+      rest.length !== 2 ||
+      rest[0] !== "--case" ||
+      !rest[1] ||
+      rest[1].startsWith("--")
+    ) {
+      write(JSON.stringify({ error: "Usage: retro --case CASE_ID" }));
+      return 2;
+    }
+    try {
+      write(JSON.stringify(buildRetroReport({ caseId: rest[1] }), null, 2));
+      return 0;
+    } catch (error) {
+      write(
+        JSON.stringify({
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+      return 2;
+    }
   }
   if (command === "cases" && rest.length === 0) {
     write(
