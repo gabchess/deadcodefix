@@ -10,6 +10,10 @@ import { writeReport } from "../prepare-repair/saved-run.ts";
 import { packageRun } from "../prepare-repair/package.ts";
 import { HARNESS_UPGRADE_CASES } from "../harnesses/cases.ts";
 import { buildPrDraft, buildRetroReport } from "../pr-retro/index.ts";
+import {
+  evaluateSessionPublicationGate,
+  readSessionFileSafely,
+} from "../session-log/jsonl.ts";
 export async function runCommands(
   args: string[],
   write: (text: string) => void,
@@ -20,7 +24,7 @@ export async function runCommands(
 demo --out PATH
 cases
 pr --case CASE_ID [--dry-run] [--repo OWNER/REPO]
-retro --case CASE_ID
+retro --case CASE_ID | --session PATH_TO_JSONL
 drift --url HTTPS_URL [--tag TAG] [--query QUERY]
 inspect --repo PATH --ref FULL_SHA
 evidence --case PATH --mode replay
@@ -86,12 +90,35 @@ Live mode requires explicit FIRECRAWL_API_KEY and approved LLM spend caps.`);
   if (command === "retro") {
     if (
       rest.length !== 2 ||
-      rest[0] !== "--case" ||
+      (rest[0] !== "--case" && rest[0] !== "--session") ||
       !rest[1] ||
       rest[1].startsWith("--")
     ) {
-      write(JSON.stringify({ error: "Usage: retro --case CASE_ID" }));
+      write(
+        JSON.stringify({
+          error: "Usage: retro --case CASE_ID | retro --session PATH_TO_JSONL",
+        }),
+      );
       return 2;
+    }
+    if (rest[0] === "--session") {
+      try {
+        const raw = readSessionFileSafely(rest[1]);
+        const gate = evaluateSessionPublicationGate({
+          stdout: raw,
+          stderr: "",
+          exitCode: 0,
+        });
+        write(JSON.stringify(gate, null, 2));
+        return gate.publicationGate === "allowed" ? 0 : 1;
+      } catch (error) {
+        write(
+          JSON.stringify({
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
+        return 1;
+      }
     }
     try {
       write(JSON.stringify(buildRetroReport({ caseId: rest[1] }), null, 2));
