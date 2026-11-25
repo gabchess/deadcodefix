@@ -83,3 +83,68 @@ test("requires an immutable full commit ID before invoking Git", () => {
     /full commit ID/,
   );
 });
+
+test("accepts clean CRLF working-tree normalization while rejecting real edits", () => {
+  const repo = mkdtempSync(join(tmpdir(), "deadcodefix-inspect-crlf-"));
+  const git = (...args: string[]) =>
+    execFileSync(
+      "git",
+      ["-c", "core.hooksPath=" + join(repo, "absent-hooks"), ...args],
+      { cwd: repo, encoding: "utf8" },
+    ).trim();
+  try {
+    git("init", "-q");
+    git("config", "core.autocrlf", "false");
+    const lfContent =
+      'export const model = "replay-old";\nexport const n = 1;\n';
+    const binContent = Buffer.from([0x00, 0x01, 0x0a, 0x02]);
+    writeFileSync(join(repo, "harness.ts"), lfContent, "utf8");
+    writeFileSync(join(repo, "data.bin"), binContent);
+    git("add", ".");
+    git(
+      "-c",
+      "user.name=Fixture",
+      "-c",
+      "user.email=fixture@example.invalid",
+      "commit",
+      "-qm",
+      "Create LF fixture",
+    );
+    const sha = git("rev-parse", "HEAD");
+    // Simulate a clean Windows core.autocrlf=true checkout of the LF text blob
+    writeFileSync(
+      join(repo, "harness.ts"),
+      lfContent.replace(/\n/g, "\r\n"),
+      "utf8",
+    );
+    const result = inspectRepository({ repo, ref: sha });
+    assert.equal(result.repoSHA, sha);
+    assert.equal(
+      result.files.find((f) => f.path === "harness.ts")?.sha256,
+      createHash("sha256").update(lfContent).digest("hex"),
+    );
+    // Binary files must never accept CRLF mutation
+    writeFileSync(
+      join(repo, "data.bin"),
+      Buffer.from([0x00, 0x01, 0x0d, 0x0a, 0x02]),
+    );
+    assert.throws(
+      () => inspectRepository({ repo, ref: sha }),
+      /clean checkout/,
+    );
+    writeFileSync(join(repo, "data.bin"), binContent);
+    // Real content change in CRLF file must still be rejected
+    writeFileSync(
+      join(repo, "harness.ts"),
+      lfContent.replace("1", "2").replace(/\n/g, "\r\n"),
+      "utf8",
+    );
+    assert.throws(
+      () => inspectRepository({ repo, ref: sha }),
+      /clean checkout/,
+    );
+  } finally {
+    assert.ok(repo.startsWith(join(tmpdir(), "deadcodefix-inspect-crlf-")));
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
