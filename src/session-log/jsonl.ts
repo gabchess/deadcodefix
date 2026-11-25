@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync } from "node:fs";
+import { closeSync, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { resolve } from "node:path";
 
-const MAX_SESSION_BYTES = 16 * 1024 * 1024;
+export const MAX_SESSION_BYTES = 16 * 1024 * 1024;
 
 const sha256 = (text: string): string =>
   createHash("sha256").update(text, "utf8").digest("hex");
@@ -14,9 +14,15 @@ export interface SessionWarning {
   rawLength: number;
 }
 
+export interface UnifiedAgentEvent {
+  type: string;
+  data: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
 export interface ParsedSessionRecord {
   lineNumber: number;
-  event: Record<string, unknown>;
+  event: UnifiedAgentEvent;
   sha256: string;
 }
 
@@ -48,11 +54,26 @@ export interface SessionPublicationGateResult {
   gateSha256: string;
 }
 
+function isUnifiedAgentEvent(value: unknown): value is UnifiedAgentEvent {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.type === "string" &&
+    record.type.trim().length > 0 &&
+    typeof record.data === "object" &&
+    record.data !== null &&
+    !Array.isArray(record.data)
+  );
+}
+
 /**
  * Parses a newline-delimited JSON (JSONL) agent session log following the
  * GitHub Agentic Workflows Unified Agent Session Specification:
+ * - Requires each canonical event to have a non-empty string `type` and object `data`.
  * - Emits a warning for every invalid JSONL line without aborting the file.
- * - Preserves all neighboring valid JSON object records intact.
+ * - Preserves all neighboring valid canonical event records intact.
  */
 export function parseAgentSessionJsonl(rawJsonl: string): ParsedAgentSession {
   const normalized = rawJsonl.replace(/\r\n/g, "\n");
@@ -68,14 +89,11 @@ export function parseAgentSessionJsonl(rawJsonl: string): ParsedAgentSession {
     const lineNumber = idx + 1;
     try {
       const parsed: unknown = JSON.parse(line);
-      if (
-        typeof parsed !== "object" ||
-        parsed === null ||
-        Array.isArray(parsed)
-      ) {
+      if (!isUnifiedAgentEvent(parsed)) {
         warnings.push({
           lineNumber,
-          reason: "JSONL line must decode to a JSON object record",
+          reason:
+            "JSONL line does not match gh-aw unified event shape ({ type: string, data: object })",
           rawSha256: sha256(line),
           rawLength: Buffer.byteLength(line, "utf8"),
         });
@@ -83,7 +101,7 @@ export function parseAgentSessionJsonl(rawJsonl: string): ParsedAgentSession {
       }
       validRecords.push({
         lineNumber,
-        event: parsed as Record<string, unknown>,
+        event: parsed,
         sha256: sha256(line),
       });
     } catch (error) {
@@ -113,7 +131,7 @@ export function parseAgentSessionJsonl(rawJsonl: string): ParsedAgentSession {
  * Evaluates a normal command/session output through the publication gate.
  * Always retains raw stdout, stderr, and exitCode in `privateRecord` and
  * blocks publication whenever exitCode !== 0, invalid JSONL lines appear,
- * or zero valid records are present.
+ * or zero valid canonical records are present.
  */
 export function evaluateSessionPublicationGate(input: {
   stdout: string;
@@ -125,7 +143,9 @@ export function evaluateSessionPublicationGate(input: {
 
   if (input.exitCode !== 0) {
     blockReasons.push(
-      `Non-zero or missing exit code (${String(input.exitCode)})`,
+      input.exitCode === null
+        ? "Execution exit code is unknown (null); explicit exit code 0 required for publication"
+        : `Non-zero exit code (${String(input.exitCode)})`,
     );
   }
   if (session.warnings.length > 0) {
@@ -134,7 +154,7 @@ export function evaluateSessionPublicationGate(input: {
     );
   }
   if (session.validRecords.length === 0) {
-    blockReasons.push("No valid JSONL session records observed");
+    blockReasons.push("No valid gh-aw unified JSONL session records observed");
   }
 
   const privateRecord: PrivateExecutionRecord = {
@@ -164,14 +184,58 @@ export function evaluateSessionPublicationGate(input: {
   };
 }
 
-export function readSessionFileSafely(filePath: string): string {
+/**
+ * Reads a regular non-linked session file with strict bounded allocation
+ * (maxBytes enforced on the open descriptor) and fatal UTF-8 validation.
+ */
+export function readSessionFileSafely(
+  filePath: string,
+  maxBytes: number = MAX_SESSION_BYTES,
+): string {
   const resolved = resolve(filePath);
-  const stat = lstatSync(resolved);
-  if (stat.isSymbolicLink() || !stat.isFile()) {
+  const linkStat = lstatSync(resolved);
+  if (linkStat.isSymbolicLink() || !linkStat.isFile()) {
     throw new Error("Session file must be a regular non-linked file");
   }
-  if (stat.size > MAX_SESSION_BYTES) {
-    throw new Error(`Session file exceeds 16 MiB limit (${stat.size} bytes)`);
+
+  const fd = openSync(resolved, "r");
+  try {
+    const fdStat = fstatSync(fd);
+    if (!fdStat.isFile()) {
+      throw new Error("Session file descriptor is not a regular file");
+    }
+    if (fdStat.size > maxBytes) {
+      throw new Error(
+        `Session file exceeds ${maxBytes} byte limit (${fdStat.size} bytes)`,
+      );
+    }
+
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+    const chunkSize = Math.min(65536, maxBytes + 1);
+    const scratch = Buffer.allocUnsafe(chunkSize);
+
+    for (;;) {
+      const remainingAllowance = maxBytes + 1 - totalBytes;
+      const toRead = Math.min(scratch.length, remainingAllowance);
+      const bytesRead = readSync(fd, scratch, 0, toRead, null);
+      if (bytesRead === 0) break;
+      totalBytes += bytesRead;
+      if (totalBytes > maxBytes) {
+        throw new Error(
+          `Session file exceeded ${maxBytes} byte limit during read`,
+        );
+      }
+      chunks.push(Buffer.from(scratch.subarray(0, bytesRead)));
+    }
+
+    const combined = Buffer.concat(chunks, totalBytes);
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(combined);
+    } catch {
+      throw new Error("Session file contains invalid UTF-8 bytes");
+    }
+  } finally {
+    closeSync(fd);
   }
-  return readFileSync(resolved, "utf8");
 }

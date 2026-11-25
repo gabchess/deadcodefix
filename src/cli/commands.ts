@@ -24,7 +24,7 @@ export async function runCommands(
 demo --out PATH
 cases
 pr --case CASE_ID [--dry-run] [--repo OWNER/REPO]
-retro --case CASE_ID | --session PATH_TO_JSONL
+retro --case CASE_ID | --session PATH_TO_JSONL [--exit-code INT]
 drift --url HTTPS_URL [--tag TAG] [--query QUERY]
 inspect --repo PATH --ref FULL_SHA
 evidence --case PATH --mode replay
@@ -88,26 +88,60 @@ Live mode requires explicit FIRECRAWL_API_KEY and approved LLM spend caps.`);
     }
   }
   if (command === "retro") {
-    if (
-      rest.length !== 2 ||
-      (rest[0] !== "--case" && rest[0] !== "--session") ||
-      !rest[1] ||
-      rest[1].startsWith("--")
-    ) {
+    const options = new Map<string, string>();
+    for (let i = 0; i < rest.length; i += 2) {
+      const flag = rest[i];
+      const val = rest[i + 1];
+      if (
+        (flag !== "--case" && flag !== "--session" && flag !== "--exit-code") ||
+        !val ||
+        val.startsWith("--") ||
+        options.has(flag)
+      ) {
+        write(
+          JSON.stringify({
+            error:
+              "Usage: retro --case CASE_ID | retro --session PATH_TO_JSONL [--exit-code INT]",
+          }),
+        );
+        return 2;
+      }
+      options.set(flag, val);
+    }
+    const caseId = options.get("--case");
+    const sessionPath = options.get("--session");
+    const exitCodeRaw = options.get("--exit-code");
+    if ((caseId && sessionPath) || (!caseId && !sessionPath)) {
       write(
         JSON.stringify({
-          error: "Usage: retro --case CASE_ID | retro --session PATH_TO_JSONL",
+          error: "Specify exactly one of --case or --session for retro",
         }),
       );
       return 2;
     }
-    if (rest[0] === "--session") {
+    if (caseId && exitCodeRaw !== undefined) {
+      write(
+        JSON.stringify({
+          error: "--exit-code is only valid with --session",
+        }),
+      );
+      return 2;
+    }
+    if (sessionPath) {
+      let parsedExitCode: number | null = null;
+      if (exitCodeRaw !== undefined) {
+        if (!/^-?\d+$/.test(exitCodeRaw)) {
+          write(JSON.stringify({ error: "--exit-code must be an integer" }));
+          return 2;
+        }
+        parsedExitCode = Number.parseInt(exitCodeRaw, 10);
+      }
       try {
-        const raw = readSessionFileSafely(rest[1]);
+        const raw = readSessionFileSafely(sessionPath);
         const gate = evaluateSessionPublicationGate({
           stdout: raw,
           stderr: "",
-          exitCode: 0,
+          exitCode: parsedExitCode,
         });
         write(JSON.stringify(gate, null, 2));
         return gate.publicationGate === "allowed" ? 0 : 1;
@@ -120,8 +154,12 @@ Live mode requires explicit FIRECRAWL_API_KEY and approved LLM spend caps.`);
         return 1;
       }
     }
+    if (!caseId) {
+      write(JSON.stringify({ error: "--case is required for retro" }));
+      return 2;
+    }
     try {
-      write(JSON.stringify(buildRetroReport({ caseId: rest[1] }), null, 2));
+      write(JSON.stringify(buildRetroReport({ caseId }), null, 2));
       return 0;
     } catch (error) {
       write(
