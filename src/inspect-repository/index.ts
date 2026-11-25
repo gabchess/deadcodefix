@@ -3,6 +3,24 @@ import { createHash } from "node:crypto";
 import { readFileSync, lstatSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { rejectLinkedPath } from "./paths.ts";
+function matchesCleanWorkingFile(blob: Buffer, current: Buffer): boolean {
+  if (blob.equals(current)) return true;
+  if (blob.includes(0) || blob.includes(13)) return false;
+  let newlines = 0;
+  for (let i = 0; i < blob.length; i++) {
+    if (blob[i] === 10) newlines++;
+  }
+  if (newlines === 0 || current.length !== blob.length + newlines) return false;
+  const crlf = Buffer.allocUnsafe(blob.length + newlines);
+  let out = 0;
+  for (let i = 0; i < blob.length; i++) {
+    const byte = blob[i];
+    if (byte === 10) crlf[out++] = 13;
+    crlf[out++] = byte;
+  }
+  return crlf.equals(current);
+}
+
 export interface RepositorySnapshot {
   repoSHA: string;
   files: { path: string; sha256: string }[];
@@ -71,7 +89,7 @@ export function inspectRepository(input: {
       throw cleanError();
     }
     const blob = git("cat-file", "blob", object);
-    if (!blob.equals(current)) throw cleanError();
+    if (!matchesCleanWorkingFile(blob, current)) throw cleanError();
     return { path, sha256: createHash("sha256").update(blob).digest("hex") };
   });
   const candidates = files
